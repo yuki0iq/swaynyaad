@@ -115,7 +115,7 @@ fn listen_for_bar(mut conn: Connection) -> Result<()> {
 fn update_monitor_state(conn: &mut Connection) -> Result<()> {
     let outputs = conn.get_outputs().context("Get outputs")?;
 
-    let status = Command::new("eww")
+    let _status = Command::new("eww")
             .arg("--restart")
             .arg("close-all")
             .spawn()
@@ -123,7 +123,8 @@ fn update_monitor_state(conn: &mut Connection) -> Result<()> {
             .wait()
             .context("close-all wasn't running")?
             .success();
-    ensure!(status, "close-all failed");
+    // ensure!(status, "close-all failed");
+    // close-all _may_ fail
 
     for (idx, output) in outputs.iter().enumerate() {
         let status = Command::new("eww")
