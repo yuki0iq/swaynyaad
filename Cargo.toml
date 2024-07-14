@@ -5,6 +5,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
+gtk4 = "0.8"
+gtk4-layer-shell = "0.3.0"
+relm4 = { version = "0.8", default-features = false, features = ["macros"] }
 serde = "1.0.202"
 serde_json = "1.0.117"
-swayipc = { version = "3.0.2", path = "../swayipc-rs/blocking" }
+smol = "2.0.0"
+swayipc-async = { path = "../swayipc-rs/async" }
