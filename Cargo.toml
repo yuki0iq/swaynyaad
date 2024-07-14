@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
+async-channel = "2.3.1"
 gtk4 = "0.8"
 gtk4-layer-shell = "0.3.0"
 relm4 = { version = "0.8", default-features = false, features = ["macros"] }
