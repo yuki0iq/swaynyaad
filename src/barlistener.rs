@@ -1,7 +1,8 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::Serialize;
+use smol::stream::StreamExt;
 use std::collections::{BTreeSet, HashMap};
-use swayipc::{Connection, Event, EventType, NodeType, ShellType};
+use swayipc_async::{Connection, EventType, NodeType, ShellType};
 
 #[derive(Debug, Serialize)]
 struct Screen {
@@ -21,14 +22,15 @@ struct State {
     screens: HashMap<String, Screen>,
 }
 
-fn update_bar_state(conn: &mut Connection) -> Result<()> {
+async fn update_bar_state(conn: &mut Connection) -> Result<()> {
     let layout_name = conn
         .get_inputs()
+        .await
         .context("Get inputs")?
         .into_iter()
         .find_map(|input| input.xkb_active_layout_name);
 
-    let workspaces = conn.get_workspaces().context("Get workspaces")?;
+    let workspaces = conn.get_workspaces().await.context("Get workspaces")?;
     let workspaces_existing = workspaces.iter().map(|ws| ws.num).collect::<BTreeSet<_>>();
     let workspaces_urgent = workspaces
         .iter()
@@ -36,13 +38,13 @@ fn update_bar_state(conn: &mut Connection) -> Result<()> {
         .map(|ws| ws.num)
         .collect::<Vec<_>>();
 
-    let outputs = conn.get_outputs().context("Get outputs")?;
+    let outputs = conn.get_outputs().await.context("Get outputs")?;
     let screen_focused = outputs
         .iter()
         .find(|output| output.focused)
         .map(|output| output.name.clone());
 
-    let tree = conn.get_tree().context("Get tree")?;
+    let tree = conn.get_tree().await.context("Get tree")?;
 
     let mut screens = HashMap::new();
     for output in outputs {
@@ -87,24 +89,23 @@ fn update_bar_state(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn listen_for_bar(mut conn: Connection) -> Result<()> {
-    update_bar_state(&mut conn).context("Report initial state")?;
-
-    let events = Connection::new()
+pub async fn listen_for_bar(mut conn: Connection) -> Result<()> {
+    let mut stream = Connection::new()
+        .await
         .context("Create another connection")?
         .subscribe([EventType::Workspace, EventType::Window, EventType::Input])
+        .await
         .context("Subscribe to events")?;
-    for event in events {
-        let event = event.context("Invalid event")?;
 
-        match event {
-            Event::Input(_) | Event::Workspace(_) | Event::Window(_) => {
-                update_bar_state(&mut conn).context("Update in response to input")?;
-            }
-            _ => {
-                bail!("Got unexpected event from sway: {event:?}");
-            }
-        }
+    // Do-while loop.
+    while {
+        update_bar_state(&mut conn)
+            .await
+            .context("Update in response to input")?;
+        true
+    } && let Some(event) = stream.next().await
+    {
+        let _ = event.context("invalid event")?;
     }
 
     Ok(())

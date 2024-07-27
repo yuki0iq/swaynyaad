@@ -7,4 +7,5 @@ edition = "2021"
 anyhow = "1.0.86"
 serde = "1.0.202"
 serde_json = "1.0.117"
-swayipc = { version = "3.0.2", path = "../swayipc-rs/blocking" }
+smol = "2.0.0"
+swayipc-async = { path = "../swayipc-rs/async" }

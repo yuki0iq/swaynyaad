@@ -1,16 +1,18 @@
-use anyhow::{bail, ensure, Context, Result};
-use std::process::Command;
-use swayipc::{Connection, Event, EventType};
+use anyhow::{ensure, Context, Result};
+use smol::process::Command;
+use smol::stream::StreamExt;
+use swayipc_async::{Connection, EventType};
 
-fn update_monitor_state(conn: &mut Connection) -> Result<()> {
-    let outputs = conn.get_outputs().context("Get outputs")?;
+async fn update_monitor_state(conn: &mut Connection) -> Result<()> {
+    let outputs = conn.get_outputs().await.context("Get outputs")?;
 
     let _status = Command::new("eww")
         .arg("--restart")
         .arg("close-all")
         .spawn()
         .context("spawn close-all")?
-        .wait()
+        .status()
+        .await
         .context("close-all wasn't running")?
         .success();
     // ensure!(status, "close-all failed");
@@ -28,7 +30,8 @@ fn update_monitor_state(conn: &mut Connection) -> Result<()> {
             .arg(format!("monitor={}", output.name))
             .spawn()
             .with_context(|| format!("spawn open on monitor {}", output.name))?
-            .wait()
+            .status()
+            .await
             .with_context(|| format!("open on monitor {} wasn't running", output.name))?
             .success();
         ensure!(status, "open on monitor {} failed", output.name);
@@ -37,25 +40,23 @@ fn update_monitor_state(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn open_bars(mut conn: Connection) -> Result<()> {
-    update_monitor_state(&mut conn).context("Initial bar launch")?;
-
-    let events = Connection::new()
+pub async fn open_bars(mut conn: Connection) -> Result<()> {
+    let mut stream = Connection::new()
+        .await
         .context("Create another connection")?
         .subscribe([EventType::Output])
+        .await
         .context("Subscribe to events")?;
-    for event in events {
-        let event = event.context("Invalid event")?;
 
-        match event {
-            Event::Output(_) => {
-                update_monitor_state(&mut conn).context("Update in response to input")?;
-            }
-            _ => {
-                bail!("Got unexpected event from sway: {event:?}");
-            }
-        }
+    // Do-while loop.
+    while {
+        update_monitor_state(&mut conn)
+            .await
+            .context("Update in response to input")?;
+        true
+    } && let Some(event) = stream.next().await
+    {
+        let _ = event.context("invalid event")?;
     }
-
     Ok(())
 }
