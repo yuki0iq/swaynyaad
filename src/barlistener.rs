@@ -64,7 +64,12 @@ async fn update_bar_state(conn: &mut Connection) -> Result<()> {
                 workspace: output.current_workspace,
                 name: focused.and_then(|node| node.name.clone()),
                 shell: focused.and_then(|node| node.shell),
-                app_id: focused.and_then(|node| node.app_id.clone()),
+                app_id: focused.and_then(|node| node.app_id.clone()).or_else(|| {
+                    focused
+                        .and_then(|node| node.window_properties.as_ref())
+                        .and_then(|prop| prop.class.as_ref())
+                        .map(|class| format!("{class} [X11]"))
+                }),
             },
         );
     }
