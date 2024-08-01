@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use smol::stream::StreamExt;
 use std::collections::{BTreeSet, HashMap};
-use swayipc_async::{Connection, EventType, NodeType, ShellType};
+use swayipc_async::{Connection, EventType, Floating, NodeType, ShellType};
 
 #[derive(Debug, Serialize)]
 struct Screen {
@@ -10,6 +10,7 @@ struct Screen {
     name: Option<String>,
     shell: Option<ShellType>,
     app_id: Option<String>,
+    floating: Option<Floating>,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,6 +71,7 @@ async fn update_bar_state(conn: &mut Connection) -> Result<()> {
                         .and_then(|prop| prop.class.as_ref())
                         .map(|class| format!("{class} [X11]"))
                 }),
+                floating: focused.and_then(|node| node.floating),
             },
         );
     }
