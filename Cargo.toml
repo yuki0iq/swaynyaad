@@ -6,10 +6,11 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.86"
 async-channel = "2.3.1"
-gtk4 = "0.8"
-gtk4-layer-shell = "0.3.0"
-relm4 = { version = "0.8", default-features = false, features = ["macros"] }
+chrono = { version = "0.4.38", default-features = false, features = ["clock"] }
+gtk4-layer-shell = "0.4"
+relm4 = { version = "0.9", default-features = false, features = ["macros"] }
 serde = "1.0.202"
 serde_json = "1.0.117"
 smol = "2.0.0"
 swayipc-async = { path = "../swayipc-rs/async" }
+tracker = "0.2.2"

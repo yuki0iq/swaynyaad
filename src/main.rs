@@ -1,102 +1,158 @@
-use anyhow::{Context, Result};
-use gtk4::glib;
-use gtk4::prelude::*;
-use gtk4_layer_shell::{Edge, Layer, LayerShell};
-use relm4::view;
+use anyhow::{bail, Context, Result};
+use chrono::{offset::Local, DateTime};
+use gtk::prelude::{BoxExt, OrientableExt};
+use gtk4_layer_shell::LayerShell;
+use relm4::{gtk, ComponentParts, ComponentSender, RelmApp, RelmWidgetExt, SimpleComponent};
 use smol::stream::StreamExt;
-// use smol::Timer;
-// use std::time::Duration;
+use std::time::Duration;
 
-fn main() -> glib::ExitCode {
-    let app = gtk4::Application::builder()
-        .application_id("sylfn.SwayNyaaBar")
-        .build();
-
-    app.connect_activate(build_ui);
-
-    app.run()
+#[derive(Debug, Default, PartialEq)]
+struct XkbLayout {
+    name: String,
+    description: String,
 }
 
-fn build_ui(app: &gtk4::Application) {
+#[tracker::track]
+#[derive(Debug, Default)]
+struct AppModel {
+    layout: XkbLayout,
+    time: DateTime<Local>,
+}
+
+#[derive(Debug)]
+enum AppInput {
+    Layout(XkbLayout),
+    Time(DateTime<Local>),
+}
+
+#[relm4::component]
+impl SimpleComponent for AppModel {
+    type Init = ();
+    type Input = AppInput;
+    type Output = ();
+
+    // TODO: prettify view
     view! {
-        gtk4::ApplicationWindow::new(app) {
+        // TODO: multi-monitor
+        gtk::Window {
             init_layer_shell: (),
+            set_layer: gtk4_layer_shell::Layer::Overlay,
             auto_exclusive_zone_enable: (),
-            set_layer: Layer::Top,
-            set_anchor: (Edge::Bottom, true),
-            set_anchor: (Edge::Left, true),
-            set_anchor: (Edge::Right, true),
+            set_anchor: (gtk4_layer_shell::Edge::Left, true),
+            set_anchor: (gtk4_layer_shell::Edge::Right, true),
+            set_anchor: (gtk4_layer_shell::Edge::Top, false),
+            set_anchor: (gtk4_layer_shell::Edge::Bottom, true),
 
-            gtk4::Box {
-                set_orientation: gtk4::Orientation::Horizontal,
-                set_spacing: 16,
-
-                // container_add: time = &gtk4::Label {},
-
-                container_add: layout = &gtk4::Label {
-                    set_tooltip_text: Some("fuck you"),
+            gtk::Box {
+                set_orientation: gtk::Orientation::Horizontal,
+                set_spacing: 10,
+                gtk::Label {
+                    #[track = "model.changed(AppModel::layout())"]
+                    set_text: &model.get_layout().name,
+                    set_tooltip: &model.get_layout().description,
                 },
-            },
-
-            present: (),
-        },
-    };
-
-    let (tx, rx) = async_channel::unbounded();
-    glib::spawn_future_local(async move {
-        let res = listen_sway_layout(tx).await.context("sway layout");
-        eprintln!("{res:?}");
-    });
-    glib::spawn_future_local(glib::clone!(
-        @weak layout => async move {
-            while let Ok(state) = rx.recv().await {
-                let name = state.name.unwrap_or_else(|| "XX:Unknown".into());
-                let short_name = name[..2].to_ascii_lowercase();
-                layout.set_text(&short_name);
-                layout.set_tooltip_text(Some(&name));
+                gtk::Label {
+                    #[track = "model.changed(AppModel::time())"]
+                    set_text: &model.get_time().format("%b %-d, %a").to_string(),
+                },
+                gtk::Label {
+                    #[track = "model.changed(AppModel::time())"]
+                    set_text: &model.get_time().format("%T").to_string(),
+                },
             }
         }
-    ));
+    }
 
-    // glib::spawn_future_local(glib::clone!(
-    //     @weak time => async move {
-    //         Timer::interval(Duration::from_secs(1))
-    //             .for_each(|instant| {
-    //                 time.set_text(&format!("{instant:?}"));
-    //             })
-    //             .await;
-    //     }
-    // ));
+    // Initialize the UI.
+    fn init(
+        _params: Self::Init,
+        root: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let model = AppModel::default();
+
+        let input_sender = sender.input_sender();
+        relm4::spawn(sway_state_listener(input_sender.clone()));
+        relm4::spawn(time_updater(input_sender.clone()));
+
+        // Insert the macro code generation here
+        let widgets = view_output!();
+
+        ComponentParts { model, widgets }
+    }
+
+    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
+        // reset tracker value of the model
+        self.reset();
+
+        match message {
+            AppInput::Layout(layout) => self.set_layout(layout),
+            AppInput::Time(time) => self.set_time(time),
+        }
+    }
 }
 
-struct Layout {
-    name: Option<String>,
-}
+async fn time_updater(tx: relm4::Sender<AppInput>) -> Result<()> {
+    let mut timer = smol::Timer::interval(Duration::from_secs(1));
+    while let Some(_instant) = timer.next().await {
+        tx.emit(AppInput::Time(Local::now()));
+    }
 
-async fn listen_sway_layout(tx: async_channel::Sender<Layout>) -> Result<()> {
-    let mut stream = swayipc_async::Connection::new()
-        .await
-        .context("create connection for subscribe")?
-        .subscribe(&[swayipc_async::EventType::Input])
-        .await
-        .context("subscribe")?;
-    let mut conn = swayipc_async::Connection::new()
-        .await
-        .context("could not create connection")?;
-    while {
-        // do
-        let layout_name = conn
-            .get_inputs()
-            .await
-            .context("Get inputs")?
-            .into_iter()
-            .find_map(|input| input.xkb_active_layout_name);
-        tx.send(Layout { name: layout_name })
-            .await
-            .context("send updated state")?;
-
-        // while
-        stream.next().await.is_some()
-    } {}
     Ok(())
+}
+
+async fn sway_state_listener(tx: relm4::Sender<AppInput>) -> Result<()> {
+    use swayipc_async::{Connection, Event, EventType};
+
+    let mut conn = Connection::new().await.context("initial connection")?;
+    let mut stream = Connection::new()
+        .await
+        .context("event connection")?
+        .subscribe([EventType::Input])
+        .await
+        .context("subscribe to events")?;
+
+    // Initial state
+    sway_fetch_input(&tx, &mut conn)
+        .await
+        .context("init input")?;
+
+    while let Some(event) = stream.next().await {
+        let Ok(event) = event else { continue };
+        match event {
+            Event::Input(_) => sway_fetch_input(&tx, &mut conn)
+                .await
+                .context("fetch input")?,
+            _ => bail!("Unexpected event"),
+        }
+    }
+
+    Ok(())
+}
+
+async fn sway_fetch_input(
+    tx: &relm4::Sender<AppInput>,
+    conn: &mut swayipc_async::Connection,
+) -> Result<()> {
+    let inputs = conn.get_inputs().await.context("get inputs")?;
+
+    let layout_name = inputs
+        .iter()
+        .find_map(|input| input.xkb_active_layout_name.as_ref());
+
+    tx.emit(AppInput::Layout(XkbLayout {
+        name: layout_name
+            .as_ref()
+            .map(|layout| layout[..2].to_ascii_lowercase())
+            .unwrap_or_else(|| "xx".into()),
+        description: layout_name
+            .cloned()
+            .unwrap_or_else(|| "Unknown layout".into()),
+    }));
+    Ok(())
+}
+
+fn main() {
+    let app = RelmApp::new("sylfn.swaynyaad.Bar");
+    app.run::<AppModel>(());
 }
