@@ -7,7 +7,8 @@ use swayipc_async::Connection;
 mod barlistener;
 mod opener;
 
-async fn async_main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     let conn = Connection::new()
         .await
         .context("create initial connection")?;
@@ -21,8 +22,4 @@ async fn async_main() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn main() -> Result<()> {
-    smol::block_on(async_main())
 }

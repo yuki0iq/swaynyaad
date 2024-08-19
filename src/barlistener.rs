@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
+use futures_lite::StreamExt;
 use serde::Serialize;
-use smol::stream::StreamExt;
 use std::collections::{BTreeSet, HashMap};
 use swayipc_async::{Connection, EventType, Floating, NodeType, ShellType};
 

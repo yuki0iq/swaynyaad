@@ -1,7 +1,7 @@
 use anyhow::{ensure, Context, Result};
-use smol::process::Command;
-use smol::stream::StreamExt;
+use futures_lite::StreamExt;
 use swayipc_async::{Connection, EventType};
+use tokio::process::Command;
 
 async fn update_monitor_state(conn: &mut Connection) -> Result<()> {
     let outputs = conn.get_outputs().await.context("Get outputs")?;
@@ -11,7 +11,7 @@ async fn update_monitor_state(conn: &mut Connection) -> Result<()> {
         .arg("close-all")
         .spawn()
         .context("spawn close-all")?
-        .status()
+        .wait()
         .await
         .context("close-all wasn't running")?
         .success();
@@ -30,7 +30,7 @@ async fn update_monitor_state(conn: &mut Connection) -> Result<()> {
             .arg(format!("monitor={}", output.name))
             .spawn()
             .with_context(|| format!("spawn open on monitor {}", output.name))?
-            .status()
+            .wait()
             .await
             .with_context(|| format!("open on monitor {} wasn't running", output.name))?
             .success();
