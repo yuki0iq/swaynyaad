@@ -27,14 +27,14 @@ enum AppInput {
 }
 
 #[relm4::component]
-impl SimpleComponent for AppModel {
+impl Component for AppModel {
     type Init = gdk::Monitor;
     type Input = AppInput;
     type Output = ();
+    type CommandOutput = ();
 
     // TODO: prettify view
     view! {
-        // TODO: multi-monitor
         gtk::Window {
             init_layer_shell: (),
             set_monitor: &monitor,
@@ -85,7 +85,7 @@ impl SimpleComponent for AppModel {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
+    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>, _root: &Self::Root) {
         // reset tracker value of the model
         self.reset();
 
