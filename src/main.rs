@@ -5,9 +5,10 @@ use gtk::{gdk, glib};
 use gtk4_layer_shell::LayerShell;
 use relm4::prelude::*;
 use smol::stream::StreamExt;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use swayipc_async::{NodeType, ShellType};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
@@ -15,10 +16,39 @@ struct XkbLayout {
     description: String,
 }
 
+#[derive(Debug)]
+struct Node {
+    name: String,
+    shell: ShellType,
+    app_id: Option<String>,
+    floating: swayipc_async::Floating,
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            name: Default::default(),
+            app_id: None,
+            shell: ShellType::Unknown,
+            floating: swayipc_async::Floating::AutoOff,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Screen {
+    workspace: Option<String>,
+    focused: Option<Node>,
+}
+
 #[derive(Debug, Default)]
 struct AppState {
     layout: XkbLayout,
     time: DateTime<Local>,
+    workspaces_urgent: Vec<i32>,
+    workspaces_existing: BTreeSet<i32>,
+    screen_focused: Option<String>,
+    screens: HashMap<String, Screen>,
 }
 
 struct AppModel {
@@ -31,6 +61,8 @@ enum AppInput {
     Outputs(HashSet<String>),
     Layout,
     Time,
+    Workspaces,
+    LoadAverage(String),
 }
 
 #[relm4::component]
@@ -58,6 +90,12 @@ impl Component for AppModel {
                 #[name(layout)] gtk::Label,
                 #[name(date)] gtk::Label,
                 #[name(time)] gtk::Label,
+                #[name(workspaces_urgent)] gtk::Label,
+                #[name(workspace_number)] gtk::Label,
+                #[name(window_class)] gtk::Label,
+                #[name(window_float)] gtk::Label,
+                #[name(connector)] gtk::Label,
+                #[name(load_average)] gtk::Label,
             }
         }
     }
@@ -74,6 +112,10 @@ impl Component for AppModel {
 
         sender.input_sender().emit(AppInput::Layout);
         sender.input_sender().emit(AppInput::Time);
+        sender.input_sender().emit(AppInput::Workspaces);
+        sender
+            .input_sender()
+            .emit(AppInput::LoadAverage("0".into()));
 
         ComponentParts { model, widgets }
     }
@@ -87,13 +129,40 @@ impl Component for AppModel {
     ) {
         let state = self.state.read().unwrap();
         match message {
+            AppInput::Outputs(_) => {}
             AppInput::Layout => ui.layout.set_text(&state.layout.name),
             AppInput::Time => {
                 ui.date
                     .set_text(&state.time.format("%b %-d, %a").to_string());
                 ui.time.set_text(&state.time.format("%T").to_string());
             }
-            AppInput::Outputs(_) => {}
+            AppInput::Workspaces => {
+                ui.workspaces_urgent
+                    .set_text(&format!("{:?}", state.workspaces_urgent));
+
+                let mon = self.monitor.connector();
+                let mon = mon.as_deref().unwrap();
+                let Some(screen) = state.screens.get(mon) else {
+                    return;
+                };
+                ui.workspace_number
+                    .set_text(screen.workspace.as_ref().unwrap());
+                ui.connector
+                    .set_text(&format!("{}", state.screen_focused.as_deref() == Some(mon)));
+
+                let Some(focused) = &screen.focused else {
+                    return;
+                };
+                ui.window_class.set_text(
+                    &None
+                        .or_else(|| focused.app_id.clone())
+                        .or_else(|| serde_json::to_string(&focused.shell).ok())
+                        .unwrap(),
+                );
+                ui.window_float
+                    .set_text(&serde_json::to_string(&focused.floating).unwrap());
+            }
+            AppInput::LoadAverage(lavg) => ui.load_average.set_text(&lavg),
         }
     }
 }
@@ -107,6 +176,17 @@ async fn time_updater(
     loop {
         state.write().unwrap().time = Local::now();
         tx.send(AppInput::Time).await.context("send time")?;
+
+        tx.send(AppInput::LoadAverage(
+            std::fs::read_to_string("/proc/loadavg")
+                .context("read lavg")?
+                .split(' ')
+                .next()
+                .context("malformed lavg")?
+                .to_owned(),
+        ))
+        .await
+        .context("send lavg")?;
 
         if timer.next().await.is_none() {
             break;
@@ -126,7 +206,12 @@ async fn sway_state_listener(
     let mut stream = Connection::new()
         .await
         .context("event connection")?
-        .subscribe([EventType::Input, EventType::Output])
+        .subscribe([
+            EventType::Input,
+            EventType::Output,
+            EventType::Workspace,
+            EventType::Window,
+        ])
         .await
         .context("subscribe to events")?;
 
@@ -146,6 +231,11 @@ async fn sway_state_listener(
             Event::Output(_) => sway_fetch_output(&tx, &mut conn, Arc::clone(&state))
                 .await
                 .context("fetch output")?,
+            Event::Window(_) | Event::Workspace(_) => {
+                sway_fetch_workspace(&tx, &mut conn, Arc::clone(&state))
+                    .await
+                    .context("fetch workspace")?
+            }
             _ => bail!("Unexpected event"),
         }
     }
@@ -179,7 +269,7 @@ async fn sway_fetch_input(
 async fn sway_fetch_output(
     tx: &smol::channel::Sender<AppInput>,
     conn: &mut swayipc_async::Connection,
-    _state: Arc<RwLock<AppState>>,
+    state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
     let outputs = conn
         .get_outputs()
@@ -193,7 +283,73 @@ async fn sway_fetch_output(
         .await
         .context("send outputs")?;
 
-    // sway_fetch_workspaces
+    sway_fetch_workspace(tx, conn, state).await?;
+
+    Ok(())
+}
+
+async fn sway_fetch_workspace(
+    tx: &smol::channel::Sender<AppInput>,
+    conn: &mut swayipc_async::Connection,
+    state: Arc<RwLock<AppState>>,
+) -> Result<()> {
+    let workspaces = conn.get_workspaces().await.context("get workspaces")?;
+    let workspaces_existing = workspaces.iter().map(|ws| ws.num).collect::<BTreeSet<_>>();
+    let workspaces_urgent = workspaces
+        .iter()
+        .filter(|ws| ws.urgent)
+        .map(|ws| ws.num)
+        .collect::<Vec<_>>();
+
+    let outputs = conn.get_outputs().await.context("get outputs")?;
+    let screen_focused = outputs
+        .iter()
+        .find(|output| output.focused)
+        .map(|output| output.name.clone());
+
+    let tree = conn.get_tree().await.context("get tree")?;
+
+    let mut screens = HashMap::new();
+    for output in outputs {
+        // This is O(total_nodes), and not O(workspaces)
+        let workspace = tree.find_as_ref(|node| {
+            node.node_type == NodeType::Workspace && node.name == output.current_workspace
+        });
+        let focused = workspace.and_then(|ws| {
+            ws.find_focused_as_ref(|node| {
+                matches!(node.node_type, NodeType::FloatingCon | NodeType::Con)
+                    && node.nodes.is_empty()
+            })
+        });
+        screens.insert(
+            output.name,
+            Screen {
+                workspace: output.current_workspace,
+                focused: focused.map(|node| Node {
+                    name: node.name.clone().unwrap_or_default(),
+                    shell: node.shell.unwrap(),
+                    floating: node.floating.unwrap(),
+                    app_id: node.app_id.clone().or_else(|| {
+                        Some(format!(
+                            "{} [X11]",
+                            node.window_properties.as_ref()?.class.as_ref()?
+                        ))
+                    }),
+                }),
+            },
+        );
+    }
+
+    {
+        let mut state = state.write().unwrap();
+        state.workspaces_urgent = workspaces_urgent;
+        state.workspaces_existing = workspaces_existing;
+        state.screen_focused = screen_focused;
+        state.screens = screens;
+    }
+    tx.send(AppInput::Workspaces)
+        .await
+        .context("send workspaces")?;
 
     Ok(())
 }
@@ -250,7 +406,7 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
                     );
                 }
             }
-            event @ (AppInput::Time | AppInput::Layout) => {
+            event => {
                 // TODO skip redundant updates
                 for controller in windows.values() {
                     // XXX: Blocking call??
