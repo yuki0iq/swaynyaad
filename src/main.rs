@@ -6,26 +6,36 @@ use gtk4_layer_shell::LayerShell;
 use relm4::prelude::*;
 use smol::stream::StreamExt;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
     name: String,
     description: String,
 }
 
-struct AppModel;
+#[derive(Debug, Default)]
+struct AppState {
+    layout: XkbLayout,
+    time: DateTime<Local>,
+}
+
+struct AppModel {
+    monitor: gdk::Monitor,
+    state: Arc<RwLock<AppState>>,
+}
 
 #[derive(Debug, Clone)]
 enum AppInput {
     Outputs(HashSet<String>),
-    Layout(XkbLayout),
-    Time(DateTime<Local>),
+    Layout,
+    Time,
 }
 
 #[relm4::component]
 impl Component for AppModel {
-    type Init = gdk::Monitor;
+    type Init = AppModel;
     type Input = AppInput;
     type Output = ();
     type CommandOutput = ();
@@ -34,7 +44,7 @@ impl Component for AppModel {
     view! {
         gtk::Window {
             init_layer_shell: (),
-            set_monitor: &monitor,
+            set_monitor: &model.monitor,
             set_layer: gtk4_layer_shell::Layer::Overlay,
             auto_exclusive_zone_enable: (),
             set_anchor: (gtk4_layer_shell::Edge::Left, true),
@@ -56,13 +66,14 @@ impl Component for AppModel {
     fn init(
         params: Self::Init,
         root: Self::Root,
-        _sender: ComponentSender<Self>,
+        sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let monitor = params;
-
-        let model = AppModel;
+        let model = params;
 
         let widgets = view_output!();
+
+        sender.input_sender().emit(AppInput::Layout);
+        sender.input_sender().emit(AppInput::Time);
 
         ComponentParts { model, widgets }
     }
@@ -74,24 +85,28 @@ impl Component for AppModel {
         _sender: ComponentSender<Self>,
         _root: &Self::Root,
     ) {
+        let state = self.state.read().unwrap();
         match message {
-            AppInput::Layout(layout) => ui.layout.set_text(&layout.name),
-            AppInput::Time(time) => {
-                ui.date.set_text(&time.format("%b %-d, %a").to_string());
-                ui.time.set_text(&time.format("%T").to_string());
+            AppInput::Layout => ui.layout.set_text(&state.layout.name),
+            AppInput::Time => {
+                ui.date
+                    .set_text(&state.time.format("%b %-d, %a").to_string());
+                ui.time.set_text(&state.time.format("%T").to_string());
             }
             AppInput::Outputs(_) => {}
         }
     }
 }
 
-async fn time_updater(tx: smol::channel::Sender<AppInput>) -> Result<()> {
+async fn time_updater(
+    tx: smol::channel::Sender<AppInput>,
+    state: Arc<RwLock<AppState>>,
+) -> Result<()> {
     let mut timer = smol::Timer::interval(Duration::from_secs(1));
 
     loop {
-        tx.send(AppInput::Time(Local::now()))
-            .await
-            .context("send time")?;
+        state.write().unwrap().time = Local::now();
+        tx.send(AppInput::Time).await.context("send time")?;
 
         if timer.next().await.is_none() {
             break;
@@ -101,7 +116,10 @@ async fn time_updater(tx: smol::channel::Sender<AppInput>) -> Result<()> {
     Ok(())
 }
 
-async fn sway_state_listener(tx: smol::channel::Sender<AppInput>) -> Result<()> {
+async fn sway_state_listener(
+    tx: smol::channel::Sender<AppInput>,
+    state: Arc<RwLock<AppState>>,
+) -> Result<()> {
     use swayipc_async::{Connection, Event, EventType};
 
     let mut conn = Connection::new().await.context("initial connection")?;
@@ -112,20 +130,20 @@ async fn sway_state_listener(tx: smol::channel::Sender<AppInput>) -> Result<()> 
         .await
         .context("subscribe to events")?;
 
-    sway_fetch_output(&tx, &mut conn)
+    sway_fetch_output(&tx, &mut conn, Arc::clone(&state))
         .await
         .context("init output")?;
-    sway_fetch_input(&tx, &mut conn)
+    sway_fetch_input(&tx, &mut conn, Arc::clone(&state))
         .await
         .context("init input")?;
 
     while let Some(event) = stream.next().await {
         let Ok(event) = event else { continue };
         match event {
-            Event::Input(_) => sway_fetch_input(&tx, &mut conn)
+            Event::Input(_) => sway_fetch_input(&tx, &mut conn, Arc::clone(&state))
                 .await
                 .context("fetch input")?,
-            Event::Output(_) => sway_fetch_output(&tx, &mut conn)
+            Event::Output(_) => sway_fetch_output(&tx, &mut conn, Arc::clone(&state))
                 .await
                 .context("fetch output")?,
             _ => bail!("Unexpected event"),
@@ -138,6 +156,7 @@ async fn sway_state_listener(tx: smol::channel::Sender<AppInput>) -> Result<()> 
 async fn sway_fetch_input(
     tx: &smol::channel::Sender<AppInput>,
     conn: &mut swayipc_async::Connection,
+    state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
     let inputs = conn.get_inputs().await.context("get inputs")?;
 
@@ -145,22 +164,22 @@ async fn sway_fetch_input(
         .iter()
         .find_map(|input| input.xkb_active_layout_name.as_ref());
 
-    tx.send(AppInput::Layout(XkbLayout {
+    state.write().unwrap().layout = XkbLayout {
         name: layout_name
             .map(|layout| layout[..2].to_ascii_lowercase())
             .unwrap_or_else(|| "xx".into()),
         description: layout_name
             .cloned()
             .unwrap_or_else(|| "Unknown layout".into()),
-    }))
-    .await
-    .context("send layout")?;
+    };
+    tx.send(AppInput::Layout).await.context("send layout")?;
     Ok(())
 }
 
 async fn sway_fetch_output(
     tx: &smol::channel::Sender<AppInput>,
     conn: &mut swayipc_async::Connection,
+    _state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
     let outputs = conn
         .get_outputs()
@@ -181,9 +200,10 @@ async fn sway_fetch_output(
 
 async fn main_loop(app: gtk::Application) -> Result<()> {
     let (tx, rx) = smol::channel::unbounded();
+    let state = Arc::new(RwLock::new(AppState::default()));
 
-    relm4::spawn_local(sway_state_listener(tx.clone()));
-    relm4::spawn_local(time_updater(tx.clone()));
+    relm4::spawn_local(sway_state_listener(tx.clone(), Arc::clone(&state)));
+    relm4::spawn_local(time_updater(tx.clone(), Arc::clone(&state)));
 
     let mut windows: HashMap<String, Controller<AppModel>> = HashMap::new();
 
@@ -213,7 +233,12 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
                         .context("unknown monitor")?
                         .clone();
 
-                    let mut controller = AppModel::builder().launch(monitor).detach();
+                    let mut controller = AppModel::builder()
+                        .launch(AppModel {
+                            monitor,
+                            state: Arc::clone(&state),
+                        })
+                        .detach();
                     let window = controller.widget();
                     app.add_window(window);
                     window.set_visible(true);
@@ -225,9 +250,8 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
                     );
                 }
             }
-            event @ (AppInput::Time(_) | AppInput::Layout(_)) => {
-                // TODO store SHARED state AND send update events ONLY if needed
-
+            event @ (AppInput::Time | AppInput::Layout) => {
+                // TODO skip redundant updates
                 for controller in windows.values() {
                     // XXX: Blocking call??
                     controller.sender().emit(event.clone());
