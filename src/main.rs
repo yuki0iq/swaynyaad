@@ -1,8 +1,9 @@
 use anyhow::{bail, Context, Result};
 use chrono::{offset::Local, DateTime};
-use gtk::prelude::{BoxExt, OrientableExt};
+use gtk::prelude::*;
+use gtk::{gdk, glib};
 use gtk4_layer_shell::LayerShell;
-use relm4::{gtk, ComponentParts, ComponentSender, RelmApp, RelmWidgetExt, SimpleComponent};
+use relm4::prelude::*;
 use smol::stream::StreamExt;
 use std::time::Duration;
 
@@ -27,7 +28,7 @@ enum AppInput {
 
 #[relm4::component]
 impl SimpleComponent for AppModel {
-    type Init = ();
+    type Init = gdk::Monitor;
     type Input = AppInput;
     type Output = ();
 
@@ -36,6 +37,7 @@ impl SimpleComponent for AppModel {
         // TODO: multi-monitor
         gtk::Window {
             init_layer_shell: (),
+            set_monitor: &monitor,
             set_layer: gtk4_layer_shell::Layer::Overlay,
             auto_exclusive_zone_enable: (),
             set_anchor: (gtk4_layer_shell::Edge::Left, true),
@@ -65,10 +67,12 @@ impl SimpleComponent for AppModel {
 
     // Initialize the UI.
     fn init(
-        _params: Self::Init,
+        params: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let monitor = params;
+
         let model = AppModel::default();
 
         let input_sender = sender.input_sender();
@@ -154,7 +158,45 @@ async fn sway_fetch_input(
     Ok(())
 }
 
-fn main() {
-    let app = RelmApp::new("sylfn.swaynyaad.Bar");
-    app.run::<AppModel>(());
+async fn main_loop(app: gtk::Application) -> Result<()> {
+    let output = "VGA-1".to_owned();
+    let monitor = gdk::Display::default()
+        .context("Failed to get default display")?
+        .monitors()
+        .into_iter()
+        .take_while(Result::is_ok)
+        .flatten()
+        .flat_map(|res| res.downcast::<gdk::Monitor>())
+        .find(|monitor| monitor.connector().as_deref() == Some(&output))
+        .context("Failed to find monitor for output")?;
+
+    let mut controller = AppModel::builder().launch(monitor).detach();
+    let window = controller.widget();
+    app.add_window(window);
+    window.set_visible(true);
+    controller.detach_runtime();
+
+    Ok(())
+}
+
+fn main() -> glib::ExitCode {
+    let app = gtk::Application::builder()
+        .application_id("sylfn.swaynyaad.Bar")
+        .build();
+
+    let start = std::sync::Once::new();
+    app.connect_activate(move |app| {
+        let app = app.to_owned();
+        start.call_once(move || {
+            std::mem::forget(app.hold());
+            relm4::spawn_local(async move {
+                if let Err(e) = main_loop(app).await {
+                    eprintln!("{e:?}");
+                    std::process::abort();
+                }
+            });
+        });
+    });
+
+    app.run()
 }
