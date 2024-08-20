@@ -99,11 +99,13 @@ impl Component for AppModel {
 async fn time_updater(tx: relm4::Sender<AppInput>) -> Result<()> {
     let mut timer = smol::Timer::interval(Duration::from_secs(1));
 
-    // Do-while loop
-    while {
+    loop {
         tx.emit(AppInput::Time(Local::now()));
-        timer.next().await.is_some()
-    } {}
+
+        if timer.next().await.is_none() {
+            break;
+        }
+    }
 
     Ok(())
 }
