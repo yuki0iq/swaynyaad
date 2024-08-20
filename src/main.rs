@@ -145,7 +145,6 @@ async fn sway_fetch_input(
 
     tx.emit(AppInput::Layout(XkbLayout {
         name: layout_name
-            .as_ref()
             .map(|layout| layout[..2].to_ascii_lowercase())
             .unwrap_or_else(|| "xx".into()),
         description: layout_name
