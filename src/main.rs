@@ -7,18 +7,13 @@ use relm4::prelude::*;
 use smol::stream::StreamExt;
 use std::time::Duration;
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct XkbLayout {
     name: String,
     description: String,
 }
 
-#[tracker::track]
-#[derive(Debug, Default)]
-struct AppModel {
-    layout: XkbLayout,
-    time: DateTime<Local>,
-}
+struct AppModel;
 
 #[derive(Debug)]
 enum AppInput {
@@ -48,19 +43,9 @@ impl Component for AppModel {
             gtk::Box {
                 set_orientation: gtk::Orientation::Horizontal,
                 set_spacing: 10,
-                gtk::Label {
-                    #[track = "model.changed(AppModel::layout())"]
-                    set_text: &model.get_layout().name,
-                    set_tooltip: &model.get_layout().description,
-                },
-                gtk::Label {
-                    #[track = "model.changed(AppModel::time())"]
-                    set_text: &model.get_time().format("%b %-d, %a").to_string(),
-                },
-                gtk::Label {
-                    #[track = "model.changed(AppModel::time())"]
-                    set_text: &model.get_time().format("%T").to_string(),
-                },
+                #[name(layout)] gtk::Label,
+                #[name(date)] gtk::Label,
+                #[name(time)] gtk::Label,
             }
         }
     }
@@ -73,8 +58,9 @@ impl Component for AppModel {
     ) -> ComponentParts<Self> {
         let monitor = params;
 
-        let model = AppModel::default();
+        let model = AppModel;
 
+        // TODO move to "opener"
         let input_sender = sender.input_sender();
         relm4::spawn(sway_state_listener(input_sender.clone()));
         relm4::spawn(time_updater(input_sender.clone()));
@@ -85,13 +71,19 @@ impl Component for AppModel {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>, _root: &Self::Root) {
-        // reset tracker value of the model
-        self.reset();
-
+    fn update_with_view(
+        &mut self,
+        ui: &mut Self::Widgets,
+        message: Self::Input,
+        _sender: ComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
         match message {
-            AppInput::Layout(layout) => self.set_layout(layout),
-            AppInput::Time(time) => self.set_time(time),
+            AppInput::Layout(layout) => ui.layout.set_text(&layout.name),
+            AppInput::Time(time) => {
+                ui.date.set_text(&time.format("%b %-d, %a").to_string());
+                ui.time.set_text(&time.format("%T").to_string());
+            }
         }
     }
 }

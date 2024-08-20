@@ -13,4 +13,3 @@ serde = "1.0.202"
 serde_json = "1.0.117"
 smol = "2.0.0"
 swayipc-async = { path = "../swayipc-rs/async" }
-tracker = "0.2.2"
