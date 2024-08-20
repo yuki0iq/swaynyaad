@@ -1,0 +1,19 @@
+* {
+    all: unset;
+
+    font-family: Cantarell;
+    font-size: 16px;
+    font-feature-settings: "tnum";
+}
+
+window.bar {
+    background: black;
+    min-height: 30px;
+}
+
+window.bar button {
+    border-radius: 30px;
+    background: #171717;
+    padding: 0 10px;
+    margin: 3px;
+}

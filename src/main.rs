@@ -1,14 +1,14 @@
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{offset::Local, DateTime};
 use gtk::prelude::*;
-use gtk::{gdk, glib};
+use gtk::{gdk, glib, Align};
 use gtk4_layer_shell::LayerShell;
 use relm4::prelude::*;
 use smol::stream::StreamExt;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use swayipc_async::{NodeType, ShellType};
+use swayipc_async::{Floating, NodeType};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
@@ -16,23 +16,11 @@ struct XkbLayout {
     description: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Node {
-    name: String,
-    shell: ShellType,
+    shell: String,
     app_id: Option<String>,
-    floating: swayipc_async::Floating,
-}
-
-impl Default for Node {
-    fn default() -> Self {
-        Self {
-            name: Default::default(),
-            app_id: None,
-            shell: ShellType::Unknown,
-            floating: swayipc_async::Floating::AutoOff,
-        }
-    }
+    floating: bool,
 }
 
 #[derive(Debug, Default)]
@@ -83,20 +71,40 @@ impl Component for AppModel {
             set_anchor: (gtk4_layer_shell::Edge::Right, true),
             set_anchor: (gtk4_layer_shell::Edge::Top, false),
             set_anchor: (gtk4_layer_shell::Edge::Bottom, true),
+            add_css_class: "bar",
 
-            gtk::Box {
-                set_orientation: gtk::Orientation::Horizontal,
-                set_spacing: 10,
-                #[name(layout)] gtk::Label,
-                #[name(date)] gtk::Label,
-                #[name(time)] gtk::Label,
-                #[name(workspaces_urgent)] gtk::Label,
-                #[name(workspace_number)] gtk::Label,
-                #[name(window_class)] gtk::Label,
-                #[name(window_float)] gtk::Label,
-                #[name(connector)] gtk::Label,
-                #[name(load_average)] gtk::Label,
-            }
+            gtk::CenterBox {
+
+                #[wrap(Some)] set_start_widget = &gtk::Box {
+                    set_halign: Align::Start,
+
+                    #[name(workspace_number)] gtk::Button,
+                    gtk::Button {
+                        #[wrap(Some)] set_child = &gtk::Box {
+                            set_spacing: 10,
+                            #[name(window_class)] gtk::Label,
+                            #[name(window_float)] gtk::Image {
+                                set_icon_name: Some("object-move-symbolic"),
+                                set_visible: false
+                            },
+                        },
+                    },
+                },
+
+                #[wrap(Some)] set_center_widget = &gtk::Box {
+                    set_halign: Align::Center,
+
+                    #[name(date)] gtk::Button,
+                    #[name(layout)] gtk::Button,
+                },
+
+                #[wrap(Some)] set_end_widget = &gtk::Box {
+                    set_halign: Align::End,
+
+                    #[name(workspaces_urgent)] gtk::Button,
+                    #[name(load_average)] gtk::Label,
+                },
+            },
         }
     }
 
@@ -130,15 +138,18 @@ impl Component for AppModel {
         let state = self.state.read().unwrap();
         match message {
             AppInput::Outputs(_) => {}
-            AppInput::Layout => ui.layout.set_text(&state.layout.name),
+            AppInput::Layout => ui.layout.set_label(&state.layout.name),
             AppInput::Time => {
                 ui.date
-                    .set_text(&state.time.format("%b %-d, %a").to_string());
-                ui.time.set_text(&state.time.format("%T").to_string());
+                    .set_label(&state.time.format("%a %b %-d \t %T").to_string());
             }
             AppInput::Workspaces => {
                 ui.workspaces_urgent
-                    .set_text(&format!("{:?}", state.workspaces_urgent));
+                    .set_icon_name(if state.workspaces_urgent.is_empty() {
+                        "radio-symbolic"
+                    } else {
+                        "radio-checked-symbolic"
+                    });
 
                 let mon = self.monitor.connector();
                 let mon = mon.as_deref().unwrap();
@@ -146,21 +157,18 @@ impl Component for AppModel {
                     return;
                 };
                 ui.workspace_number
-                    .set_text(screen.workspace.as_ref().unwrap());
-                ui.connector
-                    .set_text(&format!("{}", state.screen_focused.as_deref() == Some(mon)));
+                    .set_label(screen.workspace.as_ref().unwrap());
 
                 let Some(focused) = &screen.focused else {
                     return;
                 };
-                ui.window_class.set_text(
+                ui.window_class.set_label(
                     &None
                         .or_else(|| focused.app_id.clone())
                         .or_else(|| serde_json::to_string(&focused.shell).ok())
                         .unwrap(),
                 );
-                ui.window_float
-                    .set_text(&serde_json::to_string(&focused.floating).unwrap());
+                ui.window_float.set_visible(focused.floating);
             }
             AppInput::LoadAverage(lavg) => ui.load_average.set_text(&lavg),
         }
@@ -326,9 +334,11 @@ async fn sway_fetch_workspace(
             Screen {
                 workspace: output.current_workspace,
                 focused: focused.map(|node| Node {
-                    name: node.name.clone().unwrap_or_default(),
-                    shell: node.shell.unwrap(),
-                    floating: node.floating.unwrap(),
+                    shell: serde_json::to_string(&node.shell).unwrap(),
+                    floating: matches!(
+                        node.floating,
+                        Some(Floating::AutoOn) | Some(Floating::UserOn)
+                    ),
                     app_id: node.app_id.clone().or_else(|| {
                         Some(format!(
                             "{} [X11]",
@@ -427,6 +437,7 @@ fn main() -> glib::ExitCode {
         let app = app.to_owned();
         start.call_once(move || {
             std::mem::forget(app.hold());
+            relm4::set_global_css_from_file("/home/yuki/kek/swaynyaad/src/style.css").unwrap();
             relm4::spawn_local(async move {
                 if let Err(e) = main_loop(app).await {
                     eprintln!("{e:?}");
