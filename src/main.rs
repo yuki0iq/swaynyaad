@@ -159,12 +159,8 @@ impl Component for AppModel {
                 let Some(focused) = &screen.focused else {
                     return;
                 };
-                ui.window_class.set_label(
-                    &None
-                        .or_else(|| focused.app_id.clone())
-                        .or_else(|| serde_json::to_string(&focused.shell).ok())
-                        .unwrap(),
-                );
+                ui.window_class
+                    .set_label(focused.app_id.as_ref().unwrap_or(&focused.shell));
                 ui.window_float.set_visible(focused.floating);
             }
             AppInput::LoadAverage => ui.load_average.set_text(&state.load_average),
