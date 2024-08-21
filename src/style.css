@@ -1,6 +1,4 @@
 * {
-    all: unset;
-
     font-family: Cantarell;
     font-size: 16px;
     font-feature-settings: "tnum";
@@ -9,6 +7,10 @@
 window.bar {
     background: black;
     min-height: 32px;
+}
+
+window.bar * {
+    all: unset;
 }
 
 window.bar button {
