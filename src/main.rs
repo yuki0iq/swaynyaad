@@ -413,7 +413,6 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
             event => {
                 // TODO skip redundant updates
                 for controller in windows.values() {
-                    // XXX: Blocking call??
                     controller.sender().emit(event.clone());
                 }
             }
