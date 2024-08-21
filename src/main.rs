@@ -37,6 +37,7 @@ struct AppState {
     workspaces_existing: BTreeSet<i32>,
     screen_focused: Option<String>,
     screens: HashMap<String, Screen>,
+    load_average: String,
 }
 
 struct AppModel {
@@ -50,7 +51,7 @@ enum AppInput {
     Layout,
     Time,
     Workspaces,
-    LoadAverage(String),
+    LoadAverage,
 }
 
 #[relm4::component]
@@ -123,9 +124,7 @@ impl Component for AppModel {
         sender.input_sender().emit(AppInput::Layout);
         sender.input_sender().emit(AppInput::Time);
         sender.input_sender().emit(AppInput::Workspaces);
-        sender
-            .input_sender()
-            .emit(AppInput::LoadAverage("0".into()));
+        sender.input_sender().emit(AppInput::LoadAverage);
 
         ComponentParts { model, widgets }
     }
@@ -168,7 +167,7 @@ impl Component for AppModel {
                 );
                 ui.window_float.set_visible(focused.floating);
             }
-            AppInput::LoadAverage(lavg) => ui.load_average.set_text(&lavg),
+            AppInput::LoadAverage => ui.load_average.set_text(&state.load_average),
         }
     }
 }
@@ -183,16 +182,13 @@ async fn time_updater(
         state.write().unwrap().time = Local::now();
         tx.send(AppInput::Time).await.context("send time")?;
 
-        tx.send(AppInput::LoadAverage(
-            std::fs::read_to_string("/proc/loadavg")
-                .context("read lavg")?
-                .split(' ')
-                .next()
-                .context("malformed lavg")?
-                .to_owned(),
-        ))
-        .await
-        .context("send lavg")?;
+        state.write().unwrap().load_average = std::fs::read_to_string("/proc/loadavg")
+            .context("read lavg")?
+            .split(' ')
+            .next()
+            .context("malformed lavg")?
+            .to_owned();
+        tx.send(AppInput::LoadAverage).await.context("send lavg")?;
 
         if timer.next().await.is_none() {
             break;
