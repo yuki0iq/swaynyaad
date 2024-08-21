@@ -366,8 +366,8 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
     let (tx, rx) = smol::channel::unbounded();
     let state = Arc::new(RwLock::new(AppState::default()));
 
-    relm4::spawn_local(sway_state_listener(tx.clone(), Arc::clone(&state)));
-    relm4::spawn_local(time_updater(tx.clone(), Arc::clone(&state)));
+    relm4::spawn(sway_state_listener(tx.clone(), Arc::clone(&state)));
+    relm4::spawn(time_updater(tx.clone(), Arc::clone(&state)));
 
     let mut windows: HashMap<String, Controller<AppModel>> = HashMap::new();
 
