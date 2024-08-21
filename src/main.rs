@@ -1,14 +1,15 @@
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{offset::Local, DateTime};
+use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
 use gtk::{gdk, glib, Align};
 use gtk4_layer_shell::LayerShell;
 use relm4::prelude::*;
-use smol::stream::StreamExt;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use swayipc_async::{Floating, NodeType};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
@@ -169,33 +170,30 @@ impl Component for AppModel {
 }
 
 async fn time_updater(
-    tx: smol::channel::Sender<AppInput>,
+    tx: mpsc::UnboundedSender<AppInput>,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
-    let mut timer = smol::Timer::interval(Duration::from_secs(1));
+    let mut timer = tokio::time::interval(Duration::from_secs(1));
 
     loop {
         state.write().unwrap().time = Local::now();
-        tx.send(AppInput::Time).await.context("send time")?;
+        tx.send(AppInput::Time).context("send time")?;
 
-        state.write().unwrap().load_average = std::fs::read_to_string("/proc/loadavg")
+        state.write().unwrap().load_average = tokio::fs::read_to_string("/proc/loadavg")
+            .await
             .context("read lavg")?
             .split(' ')
             .next()
             .context("malformed lavg")?
             .to_owned();
-        tx.send(AppInput::LoadAverage).await.context("send lavg")?;
+        tx.send(AppInput::LoadAverage).context("send lavg")?;
 
-        if timer.next().await.is_none() {
-            break;
-        }
+        let _ = timer.tick().await;
     }
-
-    Ok(())
 }
 
 async fn sway_state_listener(
-    tx: smol::channel::Sender<AppInput>,
+    tx: mpsc::UnboundedSender<AppInput>,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
     use swayipc_async::{Connection, Event, EventType};
@@ -242,7 +240,7 @@ async fn sway_state_listener(
 }
 
 async fn sway_fetch_input(
-    tx: &smol::channel::Sender<AppInput>,
+    tx: &mpsc::UnboundedSender<AppInput>,
     conn: &mut swayipc_async::Connection,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
@@ -260,12 +258,12 @@ async fn sway_fetch_input(
             .cloned()
             .unwrap_or_else(|| "Unknown layout".into()),
     };
-    tx.send(AppInput::Layout).await.context("send layout")?;
+    tx.send(AppInput::Layout).context("send layout")?;
     Ok(())
 }
 
 async fn sway_fetch_output(
-    tx: &smol::channel::Sender<AppInput>,
+    tx: &mpsc::UnboundedSender<AppInput>,
     conn: &mut swayipc_async::Connection,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
@@ -278,7 +276,6 @@ async fn sway_fetch_output(
         .collect::<HashSet<_>>();
 
     tx.send(AppInput::Outputs(outputs))
-        .await
         .context("send outputs")?;
 
     sway_fetch_workspace(tx, conn, state).await?;
@@ -287,7 +284,7 @@ async fn sway_fetch_output(
 }
 
 async fn sway_fetch_workspace(
-    tx: &smol::channel::Sender<AppInput>,
+    tx: &mpsc::UnboundedSender<AppInput>,
     conn: &mut swayipc_async::Connection,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
@@ -347,15 +344,13 @@ async fn sway_fetch_workspace(
         state.screen_focused = screen_focused;
         state.screens = screens;
     }
-    tx.send(AppInput::Workspaces)
-        .await
-        .context("send workspaces")?;
+    tx.send(AppInput::Workspaces).context("send workspaces")?;
 
     Ok(())
 }
 
 async fn main_loop(app: gtk::Application) -> Result<()> {
-    let (tx, rx) = smol::channel::unbounded();
+    let (tx, mut rx) = mpsc::unbounded_channel();
     let state = Arc::new(RwLock::new(AppState::default()));
 
     relm4::spawn(sway_state_listener(tx.clone(), Arc::clone(&state)));
