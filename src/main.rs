@@ -67,7 +67,7 @@ impl Component for AppModel {
         gtk::Window {
             init_layer_shell: (),
             set_monitor: &model.monitor,
-            set_layer: gtk4_layer_shell::Layer::Overlay,
+            set_layer: gtk4_layer_shell::Layer::Top,
             auto_exclusive_zone_enable: (),
             set_anchor: (gtk4_layer_shell::Edge::Left, true),
             set_anchor: (gtk4_layer_shell::Edge::Right, true),
