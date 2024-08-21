@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
-async-channel = "2.3.1"
 chrono = { version = "0.4.38", default-features = false, features = ["clock"] }
 gtk4-layer-shell = "0.4"
 relm4 = { version = "0.9", default-features = false, features = ["macros"] }

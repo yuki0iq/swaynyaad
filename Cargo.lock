@@ -1245,7 +1245,6 @@ name = "swaynyaad"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-channel",
  "chrono",
  "gtk4-layer-shell",
  "relm4",
