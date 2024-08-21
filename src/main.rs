@@ -5,10 +5,13 @@ use gtk::prelude::*;
 use gtk::{gdk, glib, Align};
 use gtk4_layer_shell::LayerShell;
 use relm4::prelude::*;
+use rustix::system;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use swayipc_async::{Floating, NodeType};
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -38,7 +41,8 @@ struct AppState {
     workspaces_existing: BTreeSet<i32>,
     screen_focused: Option<String>,
     screens: HashMap<String, Screen>,
-    load_average: String,
+    load_average: f64,
+    memory_usage: f64,
 }
 
 struct AppModel {
@@ -52,7 +56,7 @@ enum AppInput {
     Layout,
     Time,
     Workspaces,
-    LoadAverage,
+    Sysinfo,
 }
 
 #[relm4::component]
@@ -107,6 +111,7 @@ impl Component for AppModel {
                         set_icon_name: Some("xfce-wm-stick"),
                     },
                     #[name(load_average)] gtk::Label,
+                    #[name(used_ram)] gtk::Label,
                 },
             },
         }
@@ -125,7 +130,7 @@ impl Component for AppModel {
         sender.input_sender().emit(AppInput::Layout);
         sender.input_sender().emit(AppInput::Time);
         sender.input_sender().emit(AppInput::Workspaces);
-        sender.input_sender().emit(AppInput::LoadAverage);
+        sender.input_sender().emit(AppInput::Sysinfo);
 
         ComponentParts { model, widgets }
     }
@@ -164,7 +169,11 @@ impl Component for AppModel {
                     .set_label(focused.app_id.as_ref().unwrap_or(&focused.shell));
                 ui.window_float.set_visible(focused.floating);
             }
-            AppInput::LoadAverage => ui.load_average.set_text(&state.load_average),
+            AppInput::Sysinfo => {
+                ui.load_average
+                    .set_text(&format!("{:0.2}", state.load_average));
+                ui.used_ram.set_text(&format!("{:0.2}", state.memory_usage));
+            }
         }
     }
 }
@@ -179,14 +188,45 @@ async fn time_updater(
         state.write().unwrap().time = Local::now();
         tx.send(AppInput::Time).context("send time")?;
 
-        state.write().unwrap().load_average = tokio::fs::read_to_string("/proc/loadavg")
-            .await
-            .context("read lavg")?
-            .split(' ')
-            .next()
-            .context("malformed lavg")?
-            .to_owned();
-        tx.send(AppInput::LoadAverage).context("send lavg")?;
+        {
+            let sysinfo = system::sysinfo();
+
+            let meminfo = File::open("/proc/meminfo").await.context("read meminfo")?;
+            let mut meminfo = BufReader::new(meminfo).lines();
+            let mut total_ram: usize = 1;
+            let mut available_ram: usize = 0;
+            let mut count_fields = 2;
+            while let Some(line) = meminfo.next_line().await.context("line meminfo")? {
+                let entries = line.split_whitespace().collect::<Vec<_>>();
+                match entries[..] {
+                    [name, value, _unit] => match name {
+                        "MemTotal:" => {
+                            total_ram = value.parse().context("bad total_ram")?;
+                            count_fields -= 1;
+                        }
+                        "MemAvailable:" => {
+                            available_ram = value.parse().context("bad available_ram")?;
+                            count_fields -= 1;
+                        }
+                        _ => {}
+                    },
+                    [_name, _value] => {}
+                    _ => bail!("/proc/meminfo has unexpected format"),
+                }
+
+                if count_fields == 0 {
+                    break;
+                }
+            }
+
+            let load_average = sysinfo.loads[0] as f64 / 65536.;
+            let memory_usage = 1. - available_ram as f64 / total_ram as f64;
+
+            let mut state = state.write().unwrap();
+            state.load_average = load_average;
+            state.memory_usage = memory_usage;
+            tx.send(AppInput::Sysinfo).context("send sysinfo")?;
+        }
 
         let _ = timer.tick().await;
     }
