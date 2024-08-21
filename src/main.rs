@@ -101,7 +101,9 @@ impl Component for AppModel {
                 #[wrap(Some)] set_end_widget = &gtk::Box {
                     set_halign: Align::End,
 
-                    #[name(workspaces_urgent)] gtk::Button,
+                    #[name(workspaces_urgent)] gtk::Image {
+                        set_icon_name: Some("xfce-wm-stick"),
+                    },
                     #[name(load_average)] gtk::Label,
                 },
             },
@@ -145,11 +147,7 @@ impl Component for AppModel {
             }
             AppInput::Workspaces => {
                 ui.workspaces_urgent
-                    .set_icon_name(if state.workspaces_urgent.is_empty() {
-                        "radio-symbolic"
-                    } else {
-                        "radio-checked-symbolic"
-                    });
+                    .set_visible(!state.workspaces_urgent.is_empty());
 
                 let mon = self.monitor.connector();
                 let mon = mon.as_deref().unwrap();

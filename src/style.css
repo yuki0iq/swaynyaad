@@ -8,12 +8,17 @@
 
 window.bar {
     background: black;
-    min-height: 30px;
+    min-height: 32px;
 }
 
 window.bar button {
-    border-radius: 30px;
+    margin: 3px;
+    padding: 0 10px;
+}
+
+window.bar button :hover {
+    border-radius: 32px;
     background: #171717;
     padding: 0 10px;
-    margin: 3px;
+    margin: 0 -10px;
 }
