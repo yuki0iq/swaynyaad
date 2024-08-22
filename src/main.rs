@@ -3,9 +3,10 @@ use chrono::{offset::Local, DateTime};
 use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
 use gtk::{gdk, glib, Align};
-use gtk4_layer_shell::LayerShell;
+use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use pulse::callbacks::ListResult;
 use pulse::context::introspect::{SinkInfo, SourceInfo};
+use pulse::context::subscribe::InterestMaskSet;
 use pulse::volume::ChannelVolumes;
 use relm4::prelude::*;
 use rustix::system;
@@ -132,12 +133,12 @@ impl Component for AppModel {
         gtk::Window {
             init_layer_shell: (),
             set_monitor: &model.monitor,
-            set_layer: gtk4_layer_shell::Layer::Top,
+            set_layer: Layer::Top,
             auto_exclusive_zone_enable: (),
-            set_anchor: (gtk4_layer_shell::Edge::Left, true),
-            set_anchor: (gtk4_layer_shell::Edge::Right, true),
-            set_anchor: (gtk4_layer_shell::Edge::Top, false),
-            set_anchor: (gtk4_layer_shell::Edge::Bottom, true),
+            set_anchor: (Edge::Left, true),
+            set_anchor: (Edge::Right, true),
+            set_anchor: (Edge::Top, false),
+            set_anchor: (Edge::Bottom, true),
             add_css_class: "bar",
 
             gtk::CenterBox {
@@ -507,7 +508,6 @@ async fn sound_updater(
     let mut context = ctx_rx.await?;
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<()>();
-    use pulse::context::subscribe::InterestMaskSet;
     context.subscribe(InterestMaskSet::SINK | InterestMaskSet::SOURCE, |_| {});
     context.set_subscribe_callback(Some(Box::new(move |_, _, _| {
         event_tx.send(()).expect("internal send pulse");
