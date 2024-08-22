@@ -16,6 +16,7 @@ use tokio::fs::File;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncBufReadExt, BufReader, Interest};
 use tokio::sync::mpsc;
+use upower_dbus::{DeviceProxy, UPowerProxy};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
@@ -122,6 +123,12 @@ impl Pulse {
 }
 
 #[derive(Debug, Default)]
+struct Power {
+    present: bool,
+    icon: String,
+}
+
+#[derive(Debug, Default)]
 struct AppState {
     layout: XkbLayout,
     time: DateTime<Local>,
@@ -133,6 +140,7 @@ struct AppState {
     memory_usage: f64,
     sink: Pulse,
     source: Pulse,
+    power: Power,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -240,6 +248,7 @@ enum AppInput {
     Workspaces,
     Sysinfo,
     Pulse(PulseKind),
+    Power,
 }
 
 #[relm4::component]
@@ -299,6 +308,7 @@ impl Component for AppModel {
                             #[name(source)] gtk::Image,
                             #[name(load_average)] gtk::Label,
                             #[name(used_ram)] gtk::Label,
+                            #[name(power)] gtk::Image,
                         }
                     },
                 },
@@ -334,6 +344,7 @@ impl Component for AppModel {
             AppInput::Sysinfo,
             AppInput::Pulse(PulseKind::Source),
             AppInput::Pulse(PulseKind::Sink),
+            AppInput::Power,
         ] {
             sender.input_sender().emit(event);
         }
@@ -406,6 +417,10 @@ impl Component for AppModel {
                         name: name.into(),
                         value: pulse.volume as f64 / 100.,
                     }));
+            }
+            AppInput::Power => {
+                ui.power.set_visible(state.power.present);
+                ui.power.set_icon_name(Some(&state.power.icon));
             }
         }
     }
@@ -691,6 +706,72 @@ async fn sound_updater(
     Ok(())
 }
 
+async fn upower_present(
+    tx: mpsc::UnboundedSender<AppInput>,
+    state: Arc<RwLock<AppState>>,
+    device: DeviceProxy<'_>,
+) -> Result<()> {
+    let mut present_changed = device.receive_is_present_changed().await;
+    while let Some(present) = present_changed.next().await {
+        state.write().unwrap().power.present = present.get().await?;
+        tx.send(AppInput::Power).context("upower present")?;
+    }
+    Ok(())
+}
+
+async fn upower_icon(
+    tx: mpsc::UnboundedSender<AppInput>,
+    state: Arc<RwLock<AppState>>,
+    device: DeviceProxy<'_>,
+) -> Result<()> {
+    let mut icon_changed = device.receive_icon_name_changed().await;
+    while let Some(icon) = icon_changed.next().await {
+        state.write().unwrap().power.icon = icon.get().await?;
+        tx.send(AppInput::Power).context("upower icon")?;
+    }
+    Ok(())
+}
+
+async fn upower_listener(
+    tx: mpsc::UnboundedSender<AppInput>,
+    state: Arc<RwLock<AppState>>,
+    conn: zbus::Connection,
+) -> Result<()> {
+    let upower = UPowerProxy::new(&conn).await.context("bind to upower")?;
+    let device = upower.get_display_device().await?;
+
+    let present = device.is_present().await?;
+    let icon = device.icon_name().await?;
+    state.write().unwrap().power = Power { present, icon };
+    tx.send(AppInput::Power).context("upower init")?;
+
+    tokio::spawn(upower_present(
+        tx.clone(),
+        Arc::clone(&state),
+        device.clone(),
+    ));
+    tokio::spawn(upower_icon(tx.clone(), Arc::clone(&state), device.clone()));
+
+    Ok(())
+}
+
+async fn zbus_listener(
+    tx: mpsc::UnboundedSender<AppInput>,
+    state: Arc<RwLock<AppState>>,
+) -> Result<()> {
+    let conn = zbus::Connection::system()
+        .await
+        .context("connect to system bus")?;
+
+    tokio::spawn(upower_listener(
+        tx.clone(),
+        Arc::clone(&state),
+        conn.clone(),
+    ));
+
+    Ok(())
+}
+
 async fn main_loop(app: gtk::Application) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let state = Arc::new(RwLock::new(AppState::default()));
@@ -698,6 +779,7 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
     relm4::spawn(sway_state_listener(tx.clone(), Arc::clone(&state)));
     relm4::spawn(time_updater(tx.clone(), Arc::clone(&state)));
     relm4::spawn(sound_updater(tx.clone(), Arc::clone(&state)));
+    relm4::spawn(zbus_listener(tx.clone(), Arc::clone(&state)));
 
     let mut windows: HashMap<String, Controller<AppModel>> = HashMap::new();
 

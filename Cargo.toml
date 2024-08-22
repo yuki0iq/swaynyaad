@@ -15,5 +15,7 @@ rustix = { version = "0.38.34", default-features = false, features = ["system"] 
 serde = "1.0.202"
 serde_json = "1.0.117"
 swayipc-async = { git = "https://github.com/yuki0iq/swayipc-rs", version = "2.0.3" }
-tokio = { version = "1.39.3", default-features = false, features = ["net", "process", "io-util", "time", "fs"] }
+tokio = { version = "1.39.3", default-features = false, features = ["net", "process", "io-util", "time", "fs", "macros"] }
 tokio-stream = { version = "0.1.15", default-features = false }
+upower_dbus = { git = "https://github.com/pop-os/dbus-settings-bindings", version = "0.3.2" }
+zbus = { version = "4.4.0", default-features = false, features = ["tokio"] }
