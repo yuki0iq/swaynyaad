@@ -473,9 +473,8 @@ async fn pulse_loop(tx: tokio::sync::oneshot::Sender<pulse::context::Context>) -
         .unwrap();
 
     let mut mainloop = pulse_tokio::TokioMain::new();
-    let mut context =
-        pulse::context::Context::new_with_proplist(&mainloop, "swaynyaad-context", &proplist)
-            .context("pulse context")?;
+    let mut context = pulse::context::Context::new_with_proplist(&mainloop, "swaynyaad", &proplist)
+        .context("pulse context")?;
     context
         .connect(None, pulse::context::FlagSet::NOFAIL, None)
         .context("pulse ctx connect")?;
