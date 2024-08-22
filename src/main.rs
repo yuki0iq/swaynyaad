@@ -16,7 +16,7 @@ use std::time::Duration;
 use swayipc_async::{Floating, NodeType};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
@@ -466,7 +466,7 @@ async fn sway_fetch_workspace(
     Ok(())
 }
 
-async fn pulse_loop(tx: tokio::sync::oneshot::Sender<pulse::context::Context>) -> Result<()> {
+async fn pulse_loop(tx: oneshot::Sender<pulse::context::Context>) -> Result<()> {
     let mut proplist = pulse::proplist::Proplist::new().unwrap();
     proplist
         .set_str(pulse::proplist::properties::APPLICATION_NAME, "swaynyaad")
@@ -491,7 +491,7 @@ async fn sound_updater(
     tx: mpsc::UnboundedSender<AppInput>,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
-    let (ctx_tx, ctx_rx) = tokio::sync::oneshot::channel();
+    let (ctx_tx, ctx_rx) = oneshot::channel();
     std::thread::Builder::new()
         .name("pulse-event-loop".into())
         .spawn(move || {
