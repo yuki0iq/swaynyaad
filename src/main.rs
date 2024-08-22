@@ -4,6 +4,9 @@ use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
 use gtk::{gdk, glib, Align};
 use gtk4_layer_shell::LayerShell;
+use pulse::callbacks::ListResult;
+use pulse::context::introspect::{SinkInfo, SourceInfo};
+use pulse::volume::ChannelVolumes;
 use relm4::prelude::*;
 use rustix::system;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -33,6 +36,61 @@ struct Screen {
     focused: Option<Node>,
 }
 
+#[derive(Debug, Clone)]
+enum PulseKind {
+    Sink,
+    Source,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct Pulse {
+    muted: bool,
+    volume: u32,
+    icon: String,
+}
+
+impl Pulse {
+    fn make(muted: bool, volume: ChannelVolumes, name: &str) -> Self {
+        let volume = volume.avg().0 * 100 / 65536;
+        let icon = match volume {
+            0 => "muted",
+            _ if muted => "muted",
+            v if v <= 25 => "low",
+            v if v <= 50 => "medium",
+            v if v <= 100 => "high",
+            _ => "high",
+        };
+        let icon = format!("{name}-volume-{icon}");
+        Self {
+            muted,
+            volume,
+            icon,
+        }
+    }
+}
+
+impl<T: Into<Pulse>> TryFrom<ListResult<T>> for Pulse {
+    type Error = ();
+    fn try_from(value: ListResult<T>) -> Result<Self, Self::Error> {
+        let ListResult::Item(info) = value else {
+            return Err(());
+        };
+        Ok(info.into())
+    }
+}
+
+impl From<&'_ SinkInfo<'_>> for Pulse {
+    fn from(value: &'_ SinkInfo) -> Self {
+        Self::make(value.mute, value.volume, "audio")
+    }
+}
+
+impl From<&'_ SourceInfo<'_>> for Pulse {
+    fn from(value: &'_ SourceInfo) -> Self {
+        Self::make(value.mute, value.volume, "mic")
+    }
+}
+
 #[derive(Debug, Default)]
 struct AppState {
     layout: XkbLayout,
@@ -43,8 +101,8 @@ struct AppState {
     screens: HashMap<String, Screen>,
     load_average: f64,
     memory_usage: f64,
-    sink_volume: Option<u32>,
-    source_volume: Option<u32>,
+    sink: Pulse,
+    source: Pulse,
 }
 
 struct AppModel {
@@ -59,7 +117,7 @@ enum AppInput {
     Time,
     Workspaces,
     Sysinfo,
-    PulseAudio,
+    Pulse(PulseKind),
 }
 
 #[relm4::component]
@@ -116,8 +174,8 @@ impl Component for AppModel {
                             #[name(workspaces_urgent)] gtk::Image {
                                 set_icon_name: Some("xfce-wm-stick"),
                             },
-                            #[name(source)] gtk::Image,
                             #[name(sink)] gtk::Image,
+                            #[name(source)] gtk::Image,
                             #[name(load_average)] gtk::Label,
                             #[name(used_ram)] gtk::Label,
                         }
@@ -137,11 +195,16 @@ impl Component for AppModel {
 
         let widgets = view_output!();
 
-        sender.input_sender().emit(AppInput::Layout);
-        sender.input_sender().emit(AppInput::Time);
-        sender.input_sender().emit(AppInput::Workspaces);
-        sender.input_sender().emit(AppInput::Sysinfo);
-        sender.input_sender().emit(AppInput::PulseAudio);
+        for event in [
+            AppInput::Layout,
+            AppInput::Time,
+            AppInput::Workspaces,
+            AppInput::Sysinfo,
+            AppInput::Pulse(PulseKind::Sink),
+            AppInput::Pulse(PulseKind::Source),
+        ] {
+            sender.input_sender().emit(event);
+        }
 
         ComponentParts { model, widgets }
     }
@@ -185,23 +248,8 @@ impl Component for AppModel {
                     .set_text(&format!("{:0.2}", state.load_average));
                 ui.used_ram.set_text(&format!("{:0.2}", state.memory_usage));
             }
-            AppInput::PulseAudio => {
-                let category = |level: &Option<u32>| match *level {
-                    None | Some(0) => "muted",
-                    Some(level) if level <= 25 => "low",
-                    Some(level) if level <= 50 => "medium",
-                    Some(level) if level <= 100 => "high",
-                    _ => "high",
-                };
-                ui.source.set_icon_name(Some(&format!(
-                    "audio-volume-{}",
-                    category(&state.sink_volume)
-                )));
-                ui.sink.set_icon_name(Some(&format!(
-                    "mic-volume-{}",
-                    category(&state.source_volume)
-                )));
-            }
+            AppInput::Pulse(PulseKind::Sink) => ui.sink.set_icon_name(Some(&state.sink.icon)),
+            AppInput::Pulse(PulseKind::Source) => ui.source.set_icon_name(Some(&state.source.icon)),
         }
     }
 }
@@ -464,48 +512,49 @@ async fn sound_updater(
     context.set_subscribe_callback(Some(Box::new(move |_, _, _| {
         event_tx.send(()).expect("internal send pulse");
     })));
-
     let intro = context.introspect();
-    let parse_volume = |mute: bool, level: u32, res: &mut Option<u32>| {
-        *res = if mute {
-            None
-        } else {
-            Some(level * 100 / 65536)
+
+    let (pulse_tx, mut pulse_rx) = mpsc::unbounded_channel::<(PulseKind, Pulse)>();
+
+    tokio::spawn(async move {
+        loop {
+            intro.get_sink_info_by_name("@DEFAULT_SINK@", {
+                let pulse_tx = pulse_tx.clone();
+                move |info| {
+                    if let Ok(info) = Pulse::try_from(info) {
+                        pulse_tx.send((PulseKind::Sink, info)).unwrap();
+                    }
+                }
+            });
+
+            intro.get_source_info_by_name("@DEFAULT_SOURCE@", {
+                let pulse_tx = pulse_tx.clone();
+                move |info| {
+                    if let Ok(info) = Pulse::try_from(info) {
+                        pulse_tx.send((PulseKind::Source, info)).unwrap();
+                    }
+                }
+            });
+
+            event_rx.recv().await;
         }
-    };
-    loop {
-        intro.get_sink_info_by_name("@DEFAULT_SINK@", {
-            let state = Arc::clone(&state);
-            let tx = tx.clone();
-            move |info| {
-                use pulse::callbacks::ListResult;
-                let ListResult::Item(info) = info else { return };
-                parse_volume(
-                    info.mute,
-                    info.volume.avg().0,
-                    &mut state.write().unwrap().sink_volume,
-                );
-                tx.send(AppInput::PulseAudio).expect("send sink");
-            }
-        });
+    });
 
-        intro.get_source_info_by_name("@DEFAULT_SOURCE@", {
-            let state = Arc::clone(&state);
-            let tx = tx.clone();
-            move |info| {
-                use pulse::callbacks::ListResult;
-                let ListResult::Item(info) = info else { return };
-                parse_volume(
-                    info.mute,
-                    info.volume.avg().0,
-                    &mut state.write().unwrap().source_volume,
-                );
-                tx.send(AppInput::PulseAudio).expect("send source");
-            }
-        });
-
-        event_rx.recv().await;
+    while let Some((kind, pulse)) = pulse_rx.recv().await {
+        let mut state = state.write().unwrap();
+        let slot = match kind {
+            PulseKind::Sink => &mut state.sink,
+            PulseKind::Source => &mut state.source,
+        };
+        if *slot == pulse {
+            continue;
+        }
+        // TODO notify!
+        *slot = pulse;
+        tx.send(AppInput::Pulse(kind)).context("send pulse")?;
     }
+
+    Ok(())
 }
 
 async fn main_loop(app: gtk::Application) -> Result<()> {
