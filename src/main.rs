@@ -137,8 +137,8 @@ impl Component for AppModel {
             auto_exclusive_zone_enable: (),
             set_anchor: (Edge::Left, true),
             set_anchor: (Edge::Right, true),
-            set_anchor: (Edge::Top, false),
-            set_anchor: (Edge::Bottom, true),
+            set_anchor: (Edge::Top, true),
+            set_anchor: (Edge::Bottom, false),
             add_css_class: "bar",
 
             gtk::CenterBox {
