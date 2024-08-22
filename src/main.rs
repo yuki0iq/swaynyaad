@@ -147,7 +147,7 @@ impl Component for AppModel {
                     set_halign: Align::Start,
 
                     #[name(workspace_number)] gtk::Button,
-                    gtk::Button {
+                    #[name(window)] gtk::Button {
                         #[wrap(Some)] set_child = &gtk::Box {
                             set_spacing: 8,
                             #[name(window_class)] gtk::Label,
@@ -236,6 +236,7 @@ impl Component for AppModel {
                 };
                 ui.workspace_number
                     .set_label(screen.workspace.as_ref().unwrap());
+                ui.window.set_visible(screen.focused.is_some());
 
                 let Some(focused) = &screen.focused else {
                     return;
