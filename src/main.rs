@@ -1,4 +1,4 @@
-use alsa::mixer::{Elem, Mixer, Selem, SelemChannelId};
+use alsa::mixer::{Mixer, Selem, SelemChannelId};
 use alsa::poll::{pollfd, Descriptors};
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{offset::Local, DateTime};
@@ -630,8 +630,9 @@ async fn alsa_loop(pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>) -> Resul
         mixer.handle_events().context("alsa mixer handle events")?;
 
         for elem in mixer.iter() {
-            // XXX: trust me this is okay
-            let selem = unsafe { std::mem::transmute::<Elem, Selem>(elem) };
+            let Some(selem) = Selem::new(elem) else {
+                continue;
+            };
 
             let kind = match selem.get_id().get_name() {
                 Ok("Master") => PulseKind::Sink,
