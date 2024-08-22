@@ -634,16 +634,15 @@ async fn alsa_loop(pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>) -> Resul
             let selem = unsafe { std::mem::transmute::<Elem, Selem>(elem) };
 
             let kind = match selem.get_id().get_name() {
-                Ok("Master") => Some(PulseKind::Sink),
-                Ok("Capture") => Some(PulseKind::Source),
-                _ => None,
+                Ok("Master") => PulseKind::Sink,
+                Ok("Capture") => PulseKind::Source,
+                _ => continue,
             };
-            if let Some(kind) = kind {
-                pulse_tx
-                    .send((kind, Pulse::make(selem, kind)))
-                    .ok()
-                    .context("send alsa")?;
-            }
+
+            pulse_tx
+                .send((kind, Pulse::make(selem, kind)))
+                .ok()
+                .context("send alsa")?;
         }
 
         let count = Descriptors::count(&mixer);
