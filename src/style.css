@@ -5,6 +5,27 @@
     font-feature-settings: "tnum";
 }
 
+window.changer {
+    background: none;
+}
+
+window.changer grid {
+    background: #000d;
+    border-radius: 40px;
+    padding: 16px;
+    padding-right: 24px;
+}
+
+window.changer progressbar trough {
+    border-radius: 4px;
+    background: #111;
+}
+
+window.changer progressbar trough progress {
+    border-radius: 4px;
+    background: white;
+}
+
 window.bar {
     background: black;
     min-height: 32px;
@@ -21,7 +42,7 @@ window.bar button {
 
 window.bar button :hover {
     border-radius: 32px;
-    background: #171717;
+    background: #222;
     padding: 0 8px;
     margin: 0 -8px;
 }

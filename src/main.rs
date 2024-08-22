@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use chrono::{offset::Local, DateTime};
 use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
-use gtk::{gdk, glib, Align};
+use gtk::{gdk, glib, Align, IconSize};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use pulse::callbacks::ListResult;
 use pulse::context::introspect::{SinkInfo, SourceInfo};
@@ -106,8 +106,100 @@ struct AppState {
     source: Pulse,
 }
 
+#[derive(Default, Debug, Clone)]
+struct ChangerState {
+    icon: String,
+    name: String,
+    value: f64,
+}
+
+struct ChangerModel {
+    monitor: gdk::Monitor,
+    tx: mpsc::UnboundedSender<()>,
+}
+
+#[derive(Debug, Clone)]
+enum ChangerInput {
+    Hide,
+    Show(ChangerState),
+}
+
+#[relm4::component]
+impl Component for ChangerModel {
+    type Init = (ChangerModel, mpsc::UnboundedReceiver<()>);
+    type Input = ChangerInput;
+    type Output = ();
+    type CommandOutput = ();
+
+    view! {
+        #[name(window)] gtk::Window {
+            init_layer_shell: (),
+            set_monitor: &model.monitor,
+            set_layer: Layer::Overlay,
+            set_anchor: (Edge::Bottom, true),
+            set_margin: (Edge::Bottom, 40),
+            add_css_class: "changer",
+            set_visible: false,
+
+            gtk::Grid {
+                set_column_spacing: 16,
+                set_row_spacing: 8,
+                set_halign: Align::Center,
+                set_valign: Align::Center,
+
+                attach[0, 0, 1, 2]: icon = &gtk::Image {
+                    set_icon_size: IconSize::Large,
+                },
+                attach[1, 0, 1, 1]: name = &gtk::Label,
+                attach[1, 1, 1, 1]: value = &gtk::ProgressBar,
+            },
+        }
+    }
+
+    fn init(
+        params: Self::Init,
+        root: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let (model, mut rx) = params;
+
+        let widgets = view_output!();
+
+        relm4::spawn(async move {
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+                if event.is_err() {
+                    sender.input(ChangerInput::Hide);
+                }
+            }
+        });
+
+        ComponentParts { model, widgets }
+    }
+
+    fn update_with_view(
+        &mut self,
+        ui: &mut Self::Widgets,
+        message: Self::Input,
+        _sender: ComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
+        match message {
+            ChangerInput::Hide => ui.window.set_visible(false),
+            ChangerInput::Show(state) => {
+                ui.window.set_visible(true);
+                ui.name.set_text(&state.name);
+                ui.icon.set_icon_name(Some(&state.icon));
+                ui.value.set_fraction(state.value);
+                self.tx.send(()).unwrap();
+            }
+        }
+    }
+}
+
 struct AppModel {
     monitor: gdk::Monitor,
+    changer: Option<Controller<ChangerModel>>,
     state: Arc<RwLock<AppState>>,
 }
 
@@ -128,7 +220,6 @@ impl Component for AppModel {
     type Output = ();
     type CommandOutput = ();
 
-    // TODO: prettify view
     view! {
         gtk::Window {
             init_layer_shell: (),
@@ -186,13 +277,24 @@ impl Component for AppModel {
         }
     }
 
-    // Initialize the UI.
     fn init(
         params: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let model = params;
+        let mut model = params;
+        let (tx, rx) = mpsc::unbounded_channel();
+        model.changer = Some(
+            ChangerModel::builder()
+                .launch((
+                    ChangerModel {
+                        monitor: model.monitor.clone(),
+                        tx,
+                    },
+                    rx,
+                ))
+                .detach(),
+        );
 
         let widgets = view_output!();
 
@@ -250,8 +352,32 @@ impl Component for AppModel {
                     .set_text(&format!("{:0.2}", state.load_average));
                 ui.used_ram.set_text(&format!("{:0.2}", state.memory_usage));
             }
-            AppInput::Pulse(PulseKind::Sink) => ui.sink.set_icon_name(Some(&state.sink.icon)),
-            AppInput::Pulse(PulseKind::Source) => ui.source.set_icon_name(Some(&state.source.icon)),
+            AppInput::Pulse(kind) => {
+                let name = match kind {
+                    PulseKind::Sink => "Speakers",
+                    PulseKind::Source => "Microphone",
+                };
+                let pulse = match kind {
+                    PulseKind::Sink => &state.sink,
+                    PulseKind::Source => &state.source,
+                };
+                let ui_icon = match kind {
+                    PulseKind::Sink => &ui.sink,
+                    PulseKind::Source => &ui.source,
+                };
+
+                ui_icon.set_icon_name(Some(&pulse.icon));
+
+                self.changer
+                    .as_ref()
+                    .unwrap()
+                    .sender()
+                    .emit(ChangerInput::Show(ChangerState {
+                        icon: pulse.icon.clone(),
+                        name: name.into(),
+                        value: pulse.volume as f64 / 100.,
+                    }));
+            }
         }
     }
 }
@@ -563,7 +689,6 @@ async fn sound_updater(
         if *slot == pulse {
             continue;
         }
-        // TODO notify!
         *slot = pulse;
         tx.send(AppInput::Pulse(kind)).context("send pulse")?;
     }
@@ -610,6 +735,7 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
                     let mut controller = AppModel::builder()
                         .launch(AppModel {
                             monitor,
+                            changer: None,
                             state: Arc::clone(&state),
                         })
                         .detach();
