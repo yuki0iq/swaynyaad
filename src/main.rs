@@ -1,13 +1,11 @@
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use alsa::mixer::{Elem, Mixer, Selem, SelemChannelId};
+use alsa::poll::{pollfd, Descriptors};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::{offset::Local, DateTime};
 use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
 use gtk::{gdk, glib, Align, IconSize};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
-use pulse::callbacks::ListResult;
-use pulse::context::introspect::{SinkInfo, SourceInfo};
-use pulse::context::subscribe::InterestMaskSet;
-use pulse::volume::ChannelVolumes;
 use relm4::prelude::*;
 use rustix::system;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -15,8 +13,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use swayipc_async::{Floating, NodeType};
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::{mpsc, oneshot};
+use tokio::io::unix::AsyncFd;
+use tokio::io::{AsyncBufReadExt, BufReader, Interest};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
@@ -37,7 +36,7 @@ struct Screen {
     focused: Option<Node>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 enum PulseKind {
     Sink,
     Source,
@@ -46,49 +45,79 @@ enum PulseKind {
 #[derive(Debug, Default, PartialEq)]
 struct Pulse {
     muted: bool,
-    volume: u32,
+    volume: i64,
     icon: String,
 }
 
 impl Pulse {
-    fn make(muted: bool, volume: ChannelVolumes, name: &str) -> Self {
-        let volume = volume.avg().0 * 100 / 65536;
-        let icon = match volume {
-            0 => "muted",
-            _ if muted => "muted",
-            v if v <= 25 => "low",
-            v if v <= 50 => "medium",
-            v if v <= 100 => "high",
-            _ => "high",
+    fn make(selem: Selem, kind: PulseKind) -> Self {
+        let (has_volume, has_switch, (volume_low, volume_high)) = match kind {
+            PulseKind::Sink => (
+                selem.has_playback_volume(),
+                selem.has_playback_switch(),
+                selem.get_playback_volume_range(),
+            ),
+            PulseKind::Source => (
+                selem.has_capture_volume(),
+                selem.has_capture_switch(),
+                selem.get_capture_volume_range(),
+            ),
         };
-        let icon = format!("{name}-volume-{icon}");
+
+        let (volume, muted) = if !has_volume {
+            // This device is probably nonexistent. Returning anything "normal" is okay
+            (0, true)
+        } else {
+            let get_channel_volume = |scid: &SelemChannelId| match kind {
+                PulseKind::Sink => (
+                    selem.get_playback_volume(*scid),
+                    selem.get_playback_switch(*scid),
+                ),
+                PulseKind::Source => (
+                    selem.get_capture_volume(*scid),
+                    selem.get_capture_switch(*scid),
+                ),
+            };
+
+            let mut channel_count = 0;
+            let mut globally_muted = has_switch;
+            let mut acc_volume = 0;
+            for (cur_volume, cur_muted) in SelemChannelId::all().iter().map(get_channel_volume) {
+                let Ok(cur_volume) = cur_volume else { continue };
+                let cur_muted = cur_muted == Ok(0);
+
+                globally_muted = globally_muted && cur_muted;
+                channel_count += 1;
+                if !cur_muted {
+                    acc_volume += cur_volume;
+                }
+            }
+
+            let volume = 100 * acc_volume / (volume_high - volume_low) / channel_count;
+            (volume, globally_muted)
+        };
+
+        let icon = format!(
+            "{}-volume-{}",
+            match kind {
+                PulseKind::Sink => "audio",
+                PulseKind::Source => "mic",
+            },
+            match volume {
+                0 => "muted",
+                _ if muted => "muted",
+                v if v <= 25 => "low",
+                v if v <= 50 => "medium",
+                v if v <= 100 => "high",
+                _ => "high",
+            }
+        );
+
         Self {
+            icon,
             muted,
             volume,
-            icon,
         }
-    }
-}
-
-impl<T: Into<Pulse>> TryFrom<ListResult<T>> for Pulse {
-    type Error = ();
-    fn try_from(value: ListResult<T>) -> Result<Self, Self::Error> {
-        let ListResult::Item(info) = value else {
-            return Err(());
-        };
-        Ok(info.into())
-    }
-}
-
-impl From<&'_ SinkInfo<'_>> for Pulse {
-    fn from(value: &'_ SinkInfo) -> Self {
-        Self::make(value.mute, value.volume, "audio")
-    }
-}
-
-impl From<&'_ SourceInfo<'_>> for Pulse {
-    fn from(value: &'_ SourceInfo) -> Self {
-        Self::make(value.mute, value.volume, "mic")
     }
 }
 
@@ -303,8 +332,8 @@ impl Component for AppModel {
             AppInput::Time,
             AppInput::Workspaces,
             AppInput::Sysinfo,
-            AppInput::Pulse(PulseKind::Sink),
             AppInput::Pulse(PulseKind::Source),
+            AppInput::Pulse(PulseKind::Sink),
         ] {
             sender.input_sender().emit(event);
         }
@@ -593,80 +622,49 @@ async fn sway_fetch_workspace(
     Ok(())
 }
 
-async fn pulse_loop(tx: oneshot::Sender<pulse::context::Context>) -> Result<()> {
-    let mut proplist = pulse::proplist::Proplist::new().unwrap();
-    proplist
-        .set_str(pulse::proplist::properties::APPLICATION_NAME, "swaynyaad")
-        .unwrap();
+async fn alsa_loop(pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>) -> Result<()> {
+    let mixer = Mixer::new("default", false).context("alsa mixer create")?;
 
-    let mut mainloop = pulse_tokio::TokioMain::new();
-    let mut context = pulse::context::Context::new_with_proplist(&mainloop, "swaynyaad", &proplist)
-        .context("pulse context")?;
-    context
-        .connect(None, pulse::context::FlagSet::NOFAIL, None)
-        .context("pulse ctx connect")?;
-    mainloop
-        .wait_for_ready(&context)
-        .await
-        .map_err(|e| anyhow!("{e:?}, pulse wait ready"))?;
-    ensure!(tx.send(context).is_ok());
-    ensure!(0 == mainloop.run().await.0);
-    Ok(())
-}
-
-async fn pulse_loop_start() -> Result<pulse::context::Context> {
-    let (ctx_tx, ctx_rx) = oneshot::channel();
-    std::thread::Builder::new()
-        .name("pulse-event-loop".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let local_set = tokio::task::LocalSet::new();
-            local_set.spawn_local(pulse_loop(ctx_tx));
-            rt.block_on(local_set)
-        })?;
-    Ok(ctx_rx.await?)
-}
-
-fn pulse_setup_listener(
-    mut context: pulse::context::Context,
-) -> (pulse::context::Context, mpsc::UnboundedReceiver<()>) {
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<()>();
-    context.subscribe(InterestMaskSet::SINK | InterestMaskSet::SOURCE, |_| {});
-    context.set_subscribe_callback(Some(Box::new(move |_, _, _| {
-        event_tx.send(()).expect("internal send pulse");
-    })));
-    (context, event_rx)
-}
-
-async fn pulse_adapter(
-    context: pulse::context::Context,
-    pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>,
-    mut event_rx: mpsc::UnboundedReceiver<()>,
-) -> Result<()> {
-    let intro = context.introspect();
+    let mut fds: Vec<pollfd> = vec![];
     loop {
-        intro.get_sink_info_by_name("@DEFAULT_SINK@", {
-            let pulse_tx = pulse_tx.clone();
-            move |info| {
-                if let Ok(info) = Pulse::try_from(info) {
-                    pulse_tx.send((PulseKind::Sink, info)).unwrap();
-                }
-            }
-        });
+        mixer.handle_events().context("alsa mixer handle events")?;
 
-        intro.get_source_info_by_name("@DEFAULT_SOURCE@", {
-            let pulse_tx = pulse_tx.clone();
-            move |info| {
-                if let Ok(info) = Pulse::try_from(info) {
-                    pulse_tx.send((PulseKind::Source, info)).unwrap();
-                }
-            }
-        });
+        for elem in mixer.iter() {
+            // XXX: trust me this is okay
+            let selem = unsafe { std::mem::transmute::<Elem, Selem>(elem) };
 
-        event_rx.recv().await;
+            let kind = match selem.get_id().get_name() {
+                Ok("Master") => Some(PulseKind::Sink),
+                Ok("Capture") => Some(PulseKind::Source),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                pulse_tx
+                    .send((kind, Pulse::make(selem, kind)))
+                    .ok()
+                    .context("send alsa")?;
+            }
+        }
+
+        let count = Descriptors::count(&mixer);
+        fds.resize_with(count, || pollfd {
+            fd: 0,
+            events: 0,
+            revents: 0,
+        });
+        Descriptors::fill(&mixer, &mut fds).context("fill descriptors")?;
+
+        let mut futs = Vec::with_capacity(count);
+        for pfd in &fds {
+            let fd = pfd.fd;
+            futs.push(tokio::spawn(async move {
+                let interest = Interest::ERROR | Interest::READABLE;
+                let afd = AsyncFd::with_interest(fd, interest).unwrap();
+                let res = afd.ready(interest).await;
+                res.map(|mut guard| guard.clear_ready())
+            }));
+        }
+        let _ = futures::future::select_all(futs).await;
     }
 }
 
@@ -674,11 +672,8 @@ async fn sound_updater(
     tx: mpsc::UnboundedSender<AppInput>,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
-    let context = pulse_loop_start().await.context("pulse loop start")?;
-    let (context, event_rx) = pulse_setup_listener(context);
-
-    let (pulse_tx, mut pulse_rx) = mpsc::unbounded_channel::<(PulseKind, Pulse)>();
-    tokio::spawn(pulse_adapter(context, pulse_tx, event_rx));
+    let (pulse_tx, mut pulse_rx) = mpsc::unbounded_channel();
+    relm4::spawn(alsa_loop(pulse_tx));
 
     while let Some((kind, pulse)) = pulse_rx.recv().await {
         let mut state = state.write().unwrap();
