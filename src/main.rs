@@ -1,4 +1,4 @@
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use chrono::{offset::Local, DateTime};
 use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
@@ -43,6 +43,8 @@ struct AppState {
     screens: HashMap<String, Screen>,
     load_average: f64,
     memory_usage: f64,
+    sink_volume: Option<u32>,
+    source_volume: Option<u32>,
 }
 
 struct AppModel {
@@ -57,6 +59,7 @@ enum AppInput {
     Time,
     Workspaces,
     Sysinfo,
+    PulseAudio,
 }
 
 #[relm4::component]
@@ -87,7 +90,7 @@ impl Component for AppModel {
                     #[name(workspace_number)] gtk::Button,
                     gtk::Button {
                         #[wrap(Some)] set_child = &gtk::Box {
-                            set_spacing: 10,
+                            set_spacing: 8,
                             #[name(window_class)] gtk::Label,
                             #[name(window_float)] gtk::Image {
                                 set_icon_name: Some("object-move-symbolic"),
@@ -107,11 +110,18 @@ impl Component for AppModel {
                 #[wrap(Some)] set_end_widget = &gtk::Box {
                     set_halign: Align::End,
 
-                    #[name(workspaces_urgent)] gtk::Image {
-                        set_icon_name: Some("xfce-wm-stick"),
+                    gtk::Button {
+                        #[wrap(Some)] set_child = &gtk::Box {
+                            set_spacing: 8,
+                            #[name(workspaces_urgent)] gtk::Image {
+                                set_icon_name: Some("xfce-wm-stick"),
+                            },
+                            #[name(source)] gtk::Image,
+                            #[name(sink)] gtk::Image,
+                            #[name(load_average)] gtk::Label,
+                            #[name(used_ram)] gtk::Label,
+                        }
                     },
-                    #[name(load_average)] gtk::Label,
-                    #[name(used_ram)] gtk::Label,
                 },
             },
         }
@@ -131,6 +141,7 @@ impl Component for AppModel {
         sender.input_sender().emit(AppInput::Time);
         sender.input_sender().emit(AppInput::Workspaces);
         sender.input_sender().emit(AppInput::Sysinfo);
+        sender.input_sender().emit(AppInput::PulseAudio);
 
         ComponentParts { model, widgets }
     }
@@ -173,6 +184,23 @@ impl Component for AppModel {
                 ui.load_average
                     .set_text(&format!("{:0.2}", state.load_average));
                 ui.used_ram.set_text(&format!("{:0.2}", state.memory_usage));
+            }
+            AppInput::PulseAudio => {
+                let category = |level: &Option<u32>| match *level {
+                    None | Some(0) => "muted",
+                    Some(level) if level <= 25 => "low",
+                    Some(level) if level <= 50 => "medium",
+                    Some(level) if level <= 100 => "high",
+                    _ => "high",
+                };
+                ui.source.set_icon_name(Some(&format!(
+                    "audio-volume-{}",
+                    category(&state.sink_volume)
+                )));
+                ui.sink.set_icon_name(Some(&format!(
+                    "mic-volume-{}",
+                    category(&state.source_volume)
+                )));
             }
         }
     }
@@ -389,12 +417,104 @@ async fn sway_fetch_workspace(
     Ok(())
 }
 
+async fn pulse_loop(tx: tokio::sync::oneshot::Sender<pulse::context::Context>) -> Result<()> {
+    let mut proplist = pulse::proplist::Proplist::new().unwrap();
+    proplist
+        .set_str(pulse::proplist::properties::APPLICATION_NAME, "swaynyaad")
+        .unwrap();
+
+    let mut mainloop = pulse_tokio::TokioMain::new();
+    let mut context =
+        pulse::context::Context::new_with_proplist(&mainloop, "swaynyaad-context", &proplist)
+            .context("pulse context")?;
+    context
+        .connect(None, pulse::context::FlagSet::NOFAIL, None)
+        .context("pulse ctx connect")?;
+    mainloop
+        .wait_for_ready(&context)
+        .await
+        .map_err(|e| anyhow!("{e:?}, pulse wait ready"))?;
+    ensure!(tx.send(context).is_ok());
+    ensure!(0 == mainloop.run().await.0);
+    Ok(())
+}
+
+async fn sound_updater(
+    tx: mpsc::UnboundedSender<AppInput>,
+    state: Arc<RwLock<AppState>>,
+) -> Result<()> {
+    let (ctx_tx, ctx_rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("pulse-event-loop".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let local_set = tokio::task::LocalSet::new();
+            local_set.spawn_local(pulse_loop(ctx_tx));
+            rt.block_on(local_set)
+        })
+        .context("pulse loop start")?;
+    let mut context = ctx_rx.await?;
+
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<()>();
+    use pulse::context::subscribe::InterestMaskSet;
+    context.subscribe(InterestMaskSet::SINK | InterestMaskSet::SOURCE, |_| {});
+    context.set_subscribe_callback(Some(Box::new(move |_, _, _| {
+        event_tx.send(()).expect("internal send pulse");
+    })));
+
+    let intro = context.introspect();
+    let parse_volume = |mute: bool, level: u32, res: &mut Option<u32>| {
+        *res = if mute {
+            None
+        } else {
+            Some(level * 100 / 65536)
+        }
+    };
+    loop {
+        intro.get_sink_info_by_name("@DEFAULT_SINK@", {
+            let state = Arc::clone(&state);
+            let tx = tx.clone();
+            move |info| {
+                use pulse::callbacks::ListResult;
+                let ListResult::Item(info) = info else { return };
+                parse_volume(
+                    info.mute,
+                    info.volume.avg().0,
+                    &mut state.write().unwrap().sink_volume,
+                );
+                tx.send(AppInput::PulseAudio).expect("send sink");
+            }
+        });
+
+        intro.get_source_info_by_name("@DEFAULT_SOURCE@", {
+            let state = Arc::clone(&state);
+            let tx = tx.clone();
+            move |info| {
+                use pulse::callbacks::ListResult;
+                let ListResult::Item(info) = info else { return };
+                parse_volume(
+                    info.mute,
+                    info.volume.avg().0,
+                    &mut state.write().unwrap().source_volume,
+                );
+                tx.send(AppInput::PulseAudio).expect("send source");
+            }
+        });
+
+        event_rx.recv().await;
+    }
+}
+
 async fn main_loop(app: gtk::Application) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let state = Arc::new(RwLock::new(AppState::default()));
 
     relm4::spawn(sway_state_listener(tx.clone(), Arc::clone(&state)));
     relm4::spawn(time_updater(tx.clone(), Arc::clone(&state)));
+    relm4::spawn(sound_updater(tx.clone(), Arc::clone(&state)));
 
     let mut windows: HashMap<String, Controller<AppModel>> = HashMap::new();
 
