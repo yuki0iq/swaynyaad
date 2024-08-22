@@ -487,10 +487,7 @@ async fn pulse_loop(tx: oneshot::Sender<pulse::context::Context>) -> Result<()> 
     Ok(())
 }
 
-async fn sound_updater(
-    tx: mpsc::UnboundedSender<AppInput>,
-    state: Arc<RwLock<AppState>>,
-) -> Result<()> {
+async fn pulse_loop_start() -> Result<pulse::context::Context> {
     let (ctx_tx, ctx_rx) = oneshot::channel();
     std::thread::Builder::new()
         .name("pulse-event-loop".into())
@@ -502,42 +499,59 @@ async fn sound_updater(
             let local_set = tokio::task::LocalSet::new();
             local_set.spawn_local(pulse_loop(ctx_tx));
             rt.block_on(local_set)
-        })
-        .context("pulse loop start")?;
-    let mut context = ctx_rx.await?;
+        })?;
+    Ok(ctx_rx.await?)
+}
 
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<()>();
+fn pulse_setup_listener(
+    mut context: pulse::context::Context,
+) -> (pulse::context::Context, mpsc::UnboundedReceiver<()>) {
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<()>();
     context.subscribe(InterestMaskSet::SINK | InterestMaskSet::SOURCE, |_| {});
     context.set_subscribe_callback(Some(Box::new(move |_, _, _| {
         event_tx.send(()).expect("internal send pulse");
     })));
+    (context, event_rx)
+}
+
+async fn pulse_adapter(
+    context: pulse::context::Context,
+    pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>,
+    mut event_rx: mpsc::UnboundedReceiver<()>,
+) -> Result<()> {
     let intro = context.introspect();
+    loop {
+        intro.get_sink_info_by_name("@DEFAULT_SINK@", {
+            let pulse_tx = pulse_tx.clone();
+            move |info| {
+                if let Ok(info) = Pulse::try_from(info) {
+                    pulse_tx.send((PulseKind::Sink, info)).unwrap();
+                }
+            }
+        });
+
+        intro.get_source_info_by_name("@DEFAULT_SOURCE@", {
+            let pulse_tx = pulse_tx.clone();
+            move |info| {
+                if let Ok(info) = Pulse::try_from(info) {
+                    pulse_tx.send((PulseKind::Source, info)).unwrap();
+                }
+            }
+        });
+
+        event_rx.recv().await;
+    }
+}
+
+async fn sound_updater(
+    tx: mpsc::UnboundedSender<AppInput>,
+    state: Arc<RwLock<AppState>>,
+) -> Result<()> {
+    let context = pulse_loop_start().await.context("pulse loop start")?;
+    let (context, event_rx) = pulse_setup_listener(context);
 
     let (pulse_tx, mut pulse_rx) = mpsc::unbounded_channel::<(PulseKind, Pulse)>();
-
-    tokio::spawn(async move {
-        loop {
-            intro.get_sink_info_by_name("@DEFAULT_SINK@", {
-                let pulse_tx = pulse_tx.clone();
-                move |info| {
-                    if let Ok(info) = Pulse::try_from(info) {
-                        pulse_tx.send((PulseKind::Sink, info)).unwrap();
-                    }
-                }
-            });
-
-            intro.get_source_info_by_name("@DEFAULT_SOURCE@", {
-                let pulse_tx = pulse_tx.clone();
-                move |info| {
-                    if let Ok(info) = Pulse::try_from(info) {
-                        pulse_tx.send((PulseKind::Source, info)).unwrap();
-                    }
-                }
-            });
-
-            event_rx.recv().await;
-        }
-    });
+    tokio::spawn(pulse_adapter(context, pulse_tx, event_rx));
 
     while let Some((kind, pulse)) = pulse_rx.recv().await {
         let mut state = state.write().unwrap();
