@@ -1,4 +1,4 @@
-use alsa::mixer::{Mixer, Selem, SelemChannelId};
+use alsa::mixer::{MilliBel, Mixer, Selem, SelemChannelId};
 use alsa::poll::{pollfd, Descriptors};
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{offset::Local, DateTime};
@@ -44,59 +44,93 @@ enum PulseKind {
 }
 
 #[derive(Debug, Default, PartialEq)]
-struct Pulse {
+struct PulseData {
     muted: bool,
-    volume: i64,
+    value: f64,
+    range: u64,
+}
+
+impl PulseData {
+    fn new() -> Self {
+        Self {
+            muted: true,
+            value: 0.,
+            range: 0,
+        }
+    }
+
+    fn combine(&mut self, other: Self) {
+        self.muted = self.muted && other.muted;
+        self.value += other.value;
+        self.range += other.range;
+    }
+
+    fn extract(selem: Selem, kind: PulseKind) -> Self {
+        // Can't really do anything with selems without controls
+        let true = (match kind {
+            PulseKind::Sink => selem.has_playback_volume(),
+            PulseKind::Source => selem.has_capture_volume(),
+        }) else {
+            return Self::new();
+        };
+
+        let (MilliBel(volume_low), MilliBel(volume_high)) = match kind {
+            PulseKind::Sink => selem.get_playback_db_range(),
+            PulseKind::Source => selem.get_capture_db_range(),
+        };
+
+        let mut globally_muted = match kind {
+            PulseKind::Sink => selem.has_playback_switch(),
+            PulseKind::Source => selem.has_capture_switch(),
+        };
+
+        let mut channel_count = 0;
+        let mut acc_volume = 0;
+        for &scid in SelemChannelId::all() {
+            let Ok(MilliBel(volume)) = (match kind {
+                PulseKind::Sink => selem.get_playback_vol_db(scid),
+                PulseKind::Source => selem.get_capture_vol_db(scid),
+            }) else {
+                continue;
+            };
+
+            let muted = match kind {
+                PulseKind::Sink => selem.get_playback_switch(scid),
+                PulseKind::Source => selem.get_capture_switch(scid),
+            } == Ok(0);
+
+            globally_muted = globally_muted && muted;
+            channel_count += 1;
+            if !muted {
+                acc_volume += volume - volume_low;
+            }
+        }
+
+        Self {
+            value: acc_volume as f64 / channel_count as f64,
+            range: u64::try_from(volume_high - volume_low).unwrap(),
+            muted: globally_muted,
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct Pulse {
     icon: String,
+    muted: bool,
+    fraction: f64,
 }
 
 impl Pulse {
-    fn make(selem: Selem, kind: PulseKind) -> Self {
-        let (has_volume, has_switch, (volume_low, volume_high)) = match kind {
-            PulseKind::Sink => (
-                selem.has_playback_volume(),
-                selem.has_playback_switch(),
-                selem.get_playback_volume_range(),
-            ),
-            PulseKind::Source => (
-                selem.has_capture_volume(),
-                selem.has_capture_switch(),
-                selem.get_capture_volume_range(),
-            ),
-        };
+    fn make(data: PulseData, kind: PulseKind) -> Self {
+        let PulseData {
+            muted,
+            value,
+            range,
+        } = data;
 
-        let (volume, muted) = if !has_volume {
-            // This device is probably nonexistent. Returning anything "normal" is okay
-            (0, true)
-        } else {
-            let get_channel_volume = |scid: &SelemChannelId| match kind {
-                PulseKind::Sink => (
-                    selem.get_playback_volume(*scid),
-                    selem.get_playback_switch(*scid),
-                ),
-                PulseKind::Source => (
-                    selem.get_capture_volume(*scid),
-                    selem.get_capture_switch(*scid),
-                ),
-            };
-
-            let mut channel_count = 0;
-            let mut globally_muted = has_switch;
-            let mut acc_volume = 0;
-            for (cur_volume, cur_muted) in SelemChannelId::all().iter().map(get_channel_volume) {
-                let Ok(cur_volume) = cur_volume else { continue };
-                let cur_muted = cur_muted == Ok(0);
-
-                globally_muted = globally_muted && cur_muted;
-                channel_count += 1;
-                if !cur_muted {
-                    acc_volume += cur_volume;
-                }
-            }
-
-            let volume = 100 * acc_volume / (volume_high - volume_low) / channel_count;
-            (volume, globally_muted)
-        };
+        // XXX: Change the scale
+        let fraction = 1. + (value / range.max(1) as f64).log2();
 
         let icon = format!(
             "{}-volume-{}",
@@ -104,12 +138,12 @@ impl Pulse {
                 PulseKind::Sink => "audio",
                 PulseKind::Source => "mic",
             },
-            match volume {
-                0 => "muted",
+            match (3. * fraction).ceil() as i64 {
                 _ if muted => "muted",
-                v if v <= 25 => "low",
-                v if v <= 50 => "medium",
-                v if v <= 100 => "high",
+                0 => "muted",
+                1 => "low",
+                2 => "medium",
+                3 => "high",
                 _ => "high",
             }
         );
@@ -117,7 +151,7 @@ impl Pulse {
         Self {
             icon,
             muted,
-            volume,
+            fraction,
         }
     }
 }
@@ -415,7 +449,7 @@ impl Component for AppModel {
                     .emit(ChangerInput::Show(ChangerState {
                         icon: pulse.icon.clone(),
                         name: name.into(),
-                        value: pulse.volume as f64 / 100.,
+                        value: pulse.fraction,
                     }));
             }
             AppInput::Power => {
@@ -638,11 +672,14 @@ async fn sway_fetch_workspace(
 }
 
 async fn alsa_loop(pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>) -> Result<()> {
-    let mixer = Mixer::new("default", false).context("alsa mixer create")?;
+    let mixer = Mixer::new("sysdefault", false).context("alsa mixer create")?;
 
     let mut fds: Vec<pollfd> = vec![];
     loop {
         mixer.handle_events().context("alsa mixer handle events")?;
+
+        let mut sink = PulseData::new();
+        let mut source = PulseData::new();
 
         for elem in mixer.iter() {
             let Some(selem) = Selem::new(elem) else {
@@ -650,16 +687,38 @@ async fn alsa_loop(pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>) -> Resul
             };
 
             let kind = match selem.get_id().get_name() {
-                Ok("Master") => PulseKind::Sink,
+                Ok("Master") | Ok("Headphone") | Ok("Speaker") | Ok("PCM") => PulseKind::Sink,
                 Ok("Capture") => PulseKind::Source,
                 _ => continue,
             };
 
-            pulse_tx
-                .send((kind, Pulse::make(selem, kind)))
-                .ok()
-                .context("send alsa")?;
+            let place = match kind {
+                PulseKind::Sink => &mut sink,
+                PulseKind::Source => &mut source,
+            };
+
+            let data = PulseData::extract(selem, kind);
+            place.combine(data);
         }
+
+        // XXX: For some reason on my device (reimu) `Headphone` and `Speaker` entries are
+        // both present, but only one of them is relevant for volume. Assuming no one broke
+        // the configuration, just "unsafely" ignore the other one by subtracting its range.
+        sink.range -= 6400;
+
+        // // XXX: Clamp the range to 100 dB wide.
+        // if sink.range >= 10000 {
+        //     let diff = sink.range - 10000;
+        //     sink.range = 10000;
+        //     sink.value = (sink.value - diff as f64).max(0.);
+        // }
+
+        pulse_tx
+            .send((PulseKind::Sink, Pulse::make(sink, PulseKind::Sink)))
+            .context("send alsa sink")?;
+        pulse_tx
+            .send((PulseKind::Source, Pulse::make(source, PulseKind::Source)))
+            .context("send alsa source")?;
 
         let count = Descriptors::count(&mixer);
         fds.resize_with(count, || pollfd {
