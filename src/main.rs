@@ -782,54 +782,53 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
 
     loop {
         let event = rx.recv().await.context("receive event")?;
-        match event {
-            AppInput::Outputs(new_outputs) => {
-                windows.retain(|output, _| new_outputs.contains(output));
-
-                let monitors = gdk::Display::default()
-                    .context("Failed to get default display")?
-                    .monitors()
-                    .into_iter()
-                    .take_while(Result::is_ok)
-                    .flatten()
-                    .flat_map(|res| res.downcast::<gdk::Monitor>())
-                    .collect::<Vec<_>>();
-
-                for added in new_outputs
-                    .iter()
-                    .filter(|&output| !windows.contains_key(output))
-                    .collect::<Vec<_>>()
-                {
-                    let monitor = monitors
-                        .iter()
-                        .find(|monitor| monitor.connector().as_deref() == Some(added))
-                        .context("unknown monitor")?
-                        .clone();
-
-                    let mut controller = AppModel::builder()
-                        .launch(AppModel {
-                            monitor,
-                            changer: None,
-                            state: Arc::clone(&state),
-                        })
-                        .detach();
-                    let window = controller.widget();
-                    app.add_window(window);
-                    window.set_visible(true);
-                    controller.detach_runtime();
-
-                    ensure!(
-                        windows.insert(added.into(), controller).is_none(),
-                        "nonexistent element exists"
-                    );
-                }
+        let AppInput::Outputs(new_outputs) = event else {
+            // TODO use broadcast channels (drop relm4)
+            for controller in windows.values() {
+                controller.sender().emit(event.clone());
             }
-            event => {
-                // TODO skip redundant updates
-                for controller in windows.values() {
-                    controller.sender().emit(event.clone());
-                }
-            }
+            continue;
+        };
+
+        windows.retain(|output, _| new_outputs.contains(output));
+
+        let monitors = gdk::Display::default()
+            .context("Failed to get default display")?
+            .monitors()
+            .into_iter()
+            .take_while(Result::is_ok)
+            .flatten()
+            .flat_map(|res| res.downcast::<gdk::Monitor>())
+            .collect::<Vec<_>>();
+
+        for added in new_outputs
+            .iter()
+            .filter(|&output| !windows.contains_key(output))
+            .collect::<Vec<_>>()
+        {
+            let monitor = monitors
+                .iter()
+                .find(|monitor| monitor.connector().as_deref() == Some(added))
+                .context("unknown monitor")?
+                .clone();
+
+            // TODO Using Option for one-time init is, uhhh, broken
+            let mut controller = AppModel::builder()
+                .launch(AppModel {
+                    monitor,
+                    changer: None,
+                    state: Arc::clone(&state),
+                })
+                .detach();
+            let window = controller.widget();
+            app.add_window(window);
+            window.set_visible(true);
+            controller.detach_runtime();
+
+            ensure!(
+                windows.insert(added.into(), controller).is_none(),
+                "nonexistent element exists"
+            );
         }
     }
 }
