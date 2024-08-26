@@ -161,6 +161,15 @@ enum ChangerInput {
     Show(ChangerState),
 }
 
+impl ChangerModel {
+    fn create(monitor: gdk::Monitor) -> Self {
+        ChangerModel {
+            monitor,
+            watcher: Arc::new(Notify::new()),
+        }
+    }
+}
+
 #[relm4::component]
 impl Component for ChangerModel {
     type Init = ChangerModel;
@@ -237,7 +246,7 @@ impl Component for ChangerModel {
 
 struct AppModel {
     monitor: gdk::Monitor,
-    changer: Option<Controller<ChangerModel>>,
+    changer: Controller<ChangerModel>,
     state: Arc<RwLock<AppState>>,
 }
 
@@ -250,6 +259,19 @@ enum AppInput {
     Sysinfo,
     Pulse(PulseKind),
     Power,
+}
+
+impl AppModel {
+    fn create(state: Arc<RwLock<AppState>>, monitor: gdk::Monitor) -> Self {
+        Self {
+            changer: ChangerModel::builder()
+                .launch(ChangerModel::create(monitor.clone()))
+                .detach(),
+
+            monitor,
+            state,
+        }
+    }
 }
 
 #[relm4::component]
@@ -323,15 +345,7 @@ impl Component for AppModel {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let mut model = params;
-        model.changer = Some(
-            ChangerModel::builder()
-                .launch(ChangerModel {
-                    monitor: model.monitor.clone(),
-                    watcher: Arc::new(Notify::new()),
-                })
-                .detach(),
-        );
+        let model = params;
 
         let widgets = view_output!();
 
@@ -406,15 +420,11 @@ impl Component for AppModel {
 
                 ui_icon.set_icon_name(Some(&pulse.icon));
 
-                self.changer
-                    .as_ref()
-                    .unwrap()
-                    .sender()
-                    .emit(ChangerInput::Show(ChangerState {
-                        icon: pulse.icon.clone(),
-                        name: name.into(),
-                        value: pulse.volume as f64 / 100.,
-                    }));
+                self.changer.sender().emit(ChangerInput::Show(ChangerState {
+                    icon: pulse.icon.clone(),
+                    name: name.into(),
+                    value: pulse.volume as f64 / 100.,
+                }));
             }
             AppInput::Power => {
                 ui.power.set_visible(state.power.present);
@@ -813,13 +823,8 @@ async fn main_loop() -> Result<()> {
                 .context("unknown monitor")?
                 .clone();
 
-            // TODO Using Option for one-time init is, uhhh, broken
             let controller = AppModel::builder()
-                .launch(AppModel {
-                    monitor,
-                    changer: None,
-                    state: Arc::clone(&state),
-                })
+                .launch(AppModel::create(Arc::clone(&state), monitor))
                 .detach();
 
             ensure!(
