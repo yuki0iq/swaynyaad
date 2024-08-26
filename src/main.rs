@@ -15,7 +15,7 @@ use swayipc_async::{Floating, NodeType};
 use tokio::fs::File;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncBufReadExt, BufReader, Interest};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use upower_dbus::{DeviceProxy, UPowerProxy};
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -152,7 +152,7 @@ struct ChangerState {
 
 struct ChangerModel {
     monitor: gdk::Monitor,
-    tx: mpsc::UnboundedSender<()>,
+    watcher: Arc<Notify>,
 }
 
 #[derive(Debug, Clone)]
@@ -163,7 +163,7 @@ enum ChangerInput {
 
 #[relm4::component]
 impl Component for ChangerModel {
-    type Init = (ChangerModel, mpsc::UnboundedReceiver<()>);
+    type Init = ChangerModel;
     type Input = ChangerInput;
     type Output = ();
     type CommandOutput = ();
@@ -198,13 +198,14 @@ impl Component for ChangerModel {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let (model, mut rx) = params;
+        let model = params;
 
         let widgets = view_output!();
 
+        let notify = Arc::clone(&model.watcher);
         relm4::spawn(async move {
             loop {
-                let event = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+                let event = tokio::time::timeout(Duration::from_secs(1), notify.notified()).await;
                 if event.is_err() {
                     sender.input(ChangerInput::Hide);
                 }
@@ -228,7 +229,7 @@ impl Component for ChangerModel {
                 ui.name.set_text(&state.name);
                 ui.icon.set_icon_name(Some(&state.icon));
                 ui.value.set_fraction(state.value);
-                self.tx.send(()).unwrap();
+                self.watcher.notify_one();
             }
         }
     }
@@ -322,16 +323,12 @@ impl Component for AppModel {
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         let mut model = params;
-        let (tx, rx) = mpsc::unbounded_channel();
         model.changer = Some(
             ChangerModel::builder()
-                .launch((
-                    ChangerModel {
-                        monitor: model.monitor.clone(),
-                        tx,
-                    },
-                    rx,
-                ))
+                .launch(ChangerModel {
+                    monitor: model.monitor.clone(),
+                    watcher: Arc::new(Notify::new()),
+                })
                 .detach(),
         );
 
