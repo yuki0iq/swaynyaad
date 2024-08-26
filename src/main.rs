@@ -51,52 +51,54 @@ struct Pulse {
 }
 
 impl Pulse {
-    fn make(selem: Selem, kind: PulseKind) -> Self {
-        let (has_volume, has_switch, (volume_low, volume_high)) = match kind {
-            PulseKind::Sink => (
-                selem.has_playback_volume(),
-                selem.has_playback_switch(),
-                selem.get_playback_volume_range(),
-            ),
-            PulseKind::Source => (
-                selem.has_capture_volume(),
-                selem.has_capture_switch(),
-                selem.get_capture_volume_range(),
-            ),
+    fn parse(selem: Selem, kind: PulseKind) -> (i64, bool) {
+        let has_volume = match kind {
+            PulseKind::Sink => selem.has_playback_volume(),
+            PulseKind::Source => selem.has_capture_volume(),
+        };
+        if !has_volume {
+            // This device is probably nonexistent. Returning anything "normal" is okay
+            return (0, true);
+        }
+
+        let (volume_low, volume_high) = match kind {
+            PulseKind::Sink => selem.get_playback_volume_range(),
+            PulseKind::Source => selem.get_capture_volume_range(),
         };
 
-        let (volume, muted) = if !has_volume {
-            // This device is probably nonexistent. Returning anything "normal" is okay
-            (0, true)
-        } else {
-            let get_channel_volume = |scid: &SelemChannelId| match kind {
-                PulseKind::Sink => (
-                    selem.get_playback_volume(*scid),
-                    selem.get_playback_switch(*scid),
-                ),
-                PulseKind::Source => (
-                    selem.get_capture_volume(*scid),
-                    selem.get_capture_switch(*scid),
-                ),
+        let mut globally_muted = match kind {
+            PulseKind::Sink => selem.has_playback_switch(),
+            PulseKind::Source => selem.has_capture_switch(),
+        };
+
+        let mut channel_count = 0;
+        let mut acc_volume = 0;
+        for scid in SelemChannelId::all() {
+            let Ok(cur_volume) = (match kind {
+                PulseKind::Sink => selem.get_playback_volume(*scid),
+                PulseKind::Source => selem.get_capture_volume(*scid),
+            }) else {
+                continue;
             };
 
-            let mut channel_count = 0;
-            let mut globally_muted = has_switch;
-            let mut acc_volume = 0;
-            for (cur_volume, cur_muted) in SelemChannelId::all().iter().map(get_channel_volume) {
-                let Ok(cur_volume) = cur_volume else { continue };
-                let cur_muted = cur_muted == Ok(0);
+            let cur_muted = match kind {
+                PulseKind::Sink => selem.get_playback_switch(*scid),
+                PulseKind::Source => selem.get_capture_switch(*scid),
+            } == Ok(0);
 
-                globally_muted = globally_muted && cur_muted;
-                channel_count += 1;
-                if !cur_muted {
-                    acc_volume += cur_volume;
-                }
+            globally_muted = globally_muted && cur_muted;
+            channel_count += 1;
+            if !cur_muted {
+                acc_volume += cur_volume - volume_low;
             }
+        }
 
-            let volume = 100 * acc_volume / (volume_high - volume_low) / channel_count;
-            (volume, globally_muted)
-        };
+        let volume = 100 * acc_volume / (volume_high - volume_low) / channel_count;
+        (volume, globally_muted)
+    }
+
+    fn make(selem: Selem, kind: PulseKind) -> Self {
+        let (volume, muted) = Self::parse(selem, kind);
 
         let icon = format!(
             "{}-volume-{}",
