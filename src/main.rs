@@ -270,6 +270,7 @@ impl Component for AppModel {
             set_anchor: (Edge::Top, true),
             set_anchor: (Edge::Bottom, false),
             add_css_class: "bar",
+            set_visible: true,
 
             gtk::CenterBox {
 
@@ -769,7 +770,7 @@ async fn zbus_listener(
     Ok(())
 }
 
-async fn main_loop(app: gtk::Application) -> Result<()> {
+async fn main_loop() -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let state = Arc::new(RwLock::new(AppState::default()));
 
@@ -820,9 +821,6 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
                     state: Arc::clone(&state),
                 })
                 .detach();
-            let window = controller.widget();
-            app.add_window(window);
-            window.set_visible(true);
 
             ensure!(
                 windows.insert(added.into(), controller).is_none(),
@@ -844,7 +842,7 @@ fn main() -> glib::ExitCode {
             std::mem::forget(app.hold());
             relm4::set_global_css_from_file("/home/yuki/kek/swaynyaad/src/style.css").unwrap();
             relm4::spawn_local(async move {
-                if let Err(e) = main_loop(app).await {
+                if let Err(e) = main_loop().await {
                     eprintln!("{e:?}");
                     std::process::abort();
                 }
