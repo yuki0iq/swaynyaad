@@ -813,7 +813,7 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
                 .clone();
 
             // TODO Using Option for one-time init is, uhhh, broken
-            let mut controller = AppModel::builder()
+            let controller = AppModel::builder()
                 .launch(AppModel {
                     monitor,
                     changer: None,
@@ -823,7 +823,6 @@ async fn main_loop(app: gtk::Application) -> Result<()> {
             let window = controller.widget();
             app.add_window(window);
             window.set_visible(true);
-            controller.detach_runtime();
 
             ensure!(
                 windows.insert(added.into(), controller).is_none(),
