@@ -719,14 +719,14 @@ async fn sound_updater(
     Ok(())
 }
 
-async fn upower_present(
+async fn upower_show(
     tx: mpsc::UnboundedSender<AppInput>,
     state: Arc<RwLock<AppState>>,
     device: DeviceProxy<'_>,
 ) -> Result<()> {
-    let mut present_changed = device.receive_is_present_changed().await;
-    while let Some(present) = present_changed.next().await {
-        state.write().unwrap().power.present = present.get().await?;
+    let mut changed = device.receive_is_present_changed().await;
+    while let Some(value) = changed.next().await {
+        state.write().unwrap().power.present = value.get().await?;
         tx.send(AppInput::Power).context("upower present")?;
     }
     Ok(())
@@ -737,9 +737,9 @@ async fn upower_icon(
     state: Arc<RwLock<AppState>>,
     device: DeviceProxy<'_>,
 ) -> Result<()> {
-    let mut icon_changed = device.receive_icon_name_changed().await;
-    while let Some(icon) = icon_changed.next().await {
-        state.write().unwrap().power.icon = icon.get().await?;
+    let mut changed = device.receive_icon_name_changed().await;
+    while let Some(value) = changed.next().await {
+        state.write().unwrap().power.icon = value.get().await?;
         tx.send(AppInput::Power).context("upower icon")?;
     }
     Ok(())
@@ -758,11 +758,7 @@ async fn upower_listener(
     state.write().unwrap().power = Power { present, icon };
     tx.send(AppInput::Power).context("upower init")?;
 
-    tokio::spawn(upower_present(
-        tx.clone(),
-        Arc::clone(&state),
-        device.clone(),
-    ));
+    tokio::spawn(upower_show(tx.clone(), Arc::clone(&state), device.clone()));
     tokio::spawn(upower_icon(tx.clone(), Arc::clone(&state), device.clone()));
 
     Ok(())
@@ -792,9 +788,6 @@ fn play_sound(
 ) -> Result<()> {
     let name = match event {
         AppInput::Pulse(_) => "audio-volume-change",
-
-        // TODO power-unplug?
-        AppInput::Power => "power-plug",
 
         _ => return Ok(()),
     };
