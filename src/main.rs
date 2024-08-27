@@ -264,6 +264,8 @@ enum AppInput {
     Sysinfo,
     Pulse(PulseKind),
     Power,
+    PowerPlugged,
+    PowerUnplugged,
 }
 
 impl AppModel {
@@ -434,6 +436,20 @@ impl Component for AppModel {
             AppInput::Power => {
                 ui.power.set_visible(state.power.present);
                 ui.power.set_icon_name(Some(&state.power.icon));
+            }
+            AppInput::PowerPlugged => {
+                self.changer.sender().emit(ChangerInput::Show(ChangerState {
+                    icon: "ac-adapter-symbolic".into(),
+                    name: "AC plugged".into(),
+                    value: 100.,
+                }))
+            }
+            AppInput::PowerUnplugged => {
+                self.changer.sender().emit(ChangerInput::Show(ChangerState {
+                    icon: "battery-symbolic".into(),
+                    name: "On battery".into(),
+                    value: 0.,
+                }))
             }
         }
     }
@@ -745,6 +761,19 @@ async fn upower_icon(
     Ok(())
 }
 
+async fn upower_plug(tx: mpsc::UnboundedSender<AppInput>, upower: UPowerProxy<'_>) -> Result<()> {
+    let mut changed = upower.receive_on_battery_changed().await;
+    while let Some(value) = changed.next().await {
+        tx.send(if value.get().await? {
+            AppInput::PowerPlugged
+        } else {
+            AppInput::PowerUnplugged
+        })
+        .context("upower plug")?;
+    }
+    Ok(())
+}
+
 async fn upower_listener(
     tx: mpsc::UnboundedSender<AppInput>,
     state: Arc<RwLock<AppState>>,
@@ -760,6 +789,7 @@ async fn upower_listener(
 
     tokio::spawn(upower_show(tx.clone(), Arc::clone(&state), device.clone()));
     tokio::spawn(upower_icon(tx.clone(), Arc::clone(&state), device.clone()));
+    tokio::spawn(upower_plug(tx.clone(), upower.clone()));
 
     Ok(())
 }
