@@ -6,8 +6,11 @@ use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
 use gtk::{gdk, glib, Align, IconSize};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
+use kira::manager::{AudioManager, AudioManagerSettings, DefaultBackend};
+use kira::sound::static_sound::StaticSoundData;
 use relm4::prelude::*;
 use rustix::system;
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -782,6 +785,37 @@ async fn zbus_listener(
     Ok(())
 }
 
+fn play_sound(
+    manager: &mut AudioManager,
+    cache: &mut HashMap<&'static str, StaticSoundData>,
+    event: &AppInput,
+) -> Result<()> {
+    let name = match event {
+        AppInput::Pulse(_) => "audio-volume-change",
+
+        // TODO power-unplug?
+        AppInput::Power => "power-plug",
+
+        _ => return Ok(()),
+    };
+
+    let sound_data = match cache.entry(name) {
+        Entry::Vacant(vacant) => vacant
+            .insert(
+                StaticSoundData::from_file(format!(
+                    "/usr/share/sounds/freedesktop/stereo/{name}.oga"
+                ))
+                .context("open sound")?,
+            )
+            .clone(),
+        Entry::Occupied(occupied) => occupied.get().clone(),
+    };
+
+    manager.play(sound_data).context("play data")?;
+
+    Ok(())
+}
+
 async fn main_loop() -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let state = Arc::new(RwLock::new(AppState::default()));
@@ -793,9 +827,15 @@ async fn main_loop() -> Result<()> {
 
     let mut windows: HashMap<String, Controller<AppModel>> = HashMap::new();
 
+    let mut manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())
+        .context("create audio manager")?;
+    let mut sound_cache = HashMap::new();
+
     loop {
         let event = rx.recv().await.context("receive event")?;
         let AppInput::Outputs(new_outputs) = event else {
+            play_sound(&mut manager, &mut sound_cache, &event).context("play sound")?;
+
             // TODO use broadcast channels (drop relm4)
             for controller in windows.values() {
                 controller.sender().emit(event.clone());
