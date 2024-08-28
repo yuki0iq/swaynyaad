@@ -841,7 +841,7 @@ async fn upower_state(
     let bat_state = device.state().await?;
     let charging = matches!(
         bat_state,
-        BatteryState::PendingCharge | BatteryState::Charging
+        BatteryState::PendingCharge | BatteryState::Charging | BatteryState::FullyCharged
     );
 
     let bat_type = device.type_().await?;
