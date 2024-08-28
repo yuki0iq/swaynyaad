@@ -24,6 +24,107 @@ use tokio::io::{AsyncBufReadExt, BufReader, Interest};
 use tokio::sync::{mpsc, Notify};
 use upower_dbus::{BatteryState, BatteryType, DeviceProxy, UPowerProxy};
 
+#[derive(Default, Debug, Clone)]
+struct ChangerState {
+    icon: String,
+    name: String,
+    value: f64,
+}
+
+struct ChangerModel {
+    monitor: gdk::Monitor,
+    watcher: Arc<Notify>,
+}
+
+#[derive(Debug, Clone)]
+enum ChangerInput {
+    Hide,
+    Show(ChangerState),
+}
+
+impl ChangerModel {
+    fn create(monitor: gdk::Monitor) -> Self {
+        ChangerModel {
+            monitor,
+            watcher: Arc::new(Notify::new()),
+        }
+    }
+}
+
+#[relm4::component]
+impl Component for ChangerModel {
+    type Init = ChangerModel;
+    type Input = ChangerInput;
+    type Output = ();
+    type CommandOutput = ();
+
+    view! {
+        #[name(window)] gtk::Window {
+            init_layer_shell: (),
+            set_monitor: &model.monitor,
+            set_layer: Layer::Overlay,
+            set_anchor: (Edge::Bottom, true),
+            set_margin: (Edge::Bottom, 40),
+            add_css_class: "changer",
+            set_visible: false,
+
+            gtk::Grid {
+                set_column_spacing: 16,
+                set_row_spacing: 8,
+                set_halign: Align::Center,
+                set_valign: Align::Center,
+
+                attach[0, 0, 1, 2]: icon = &gtk::Image {
+                    set_icon_size: IconSize::Large,
+                },
+                attach[1, 0, 1, 1]: name = &gtk::Label,
+                attach[1, 1, 1, 1]: value = &gtk::ProgressBar,
+            },
+        }
+    }
+
+    fn init(
+        params: Self::Init,
+        root: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let model = params;
+
+        let widgets = view_output!();
+
+        let notify = Arc::clone(&model.watcher);
+        relm4::spawn(async move {
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(1), notify.notified()).await;
+                if event.is_err() {
+                    sender.input(ChangerInput::Hide);
+                }
+            }
+        });
+
+        ComponentParts { model, widgets }
+    }
+
+    fn update_with_view(
+        &mut self,
+        ui: &mut Self::Widgets,
+        message: Self::Input,
+        _sender: ComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
+        match message {
+            ChangerInput::Hide => ui.window.set_visible(false),
+            ChangerInput::Show(state) => {
+                ui.window.set_visible(true);
+                ui.name.set_text(&state.name);
+                ui.icon.set_icon_name(Some(&state.icon));
+                ui.value.set_fraction(state.value);
+                self.watcher.notify_one();
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
     name: String,
@@ -151,107 +252,6 @@ struct AppState {
     sink: Pulse,
     source: Pulse,
     power: Power,
-}
-
-#[derive(Default, Debug, Clone)]
-struct ChangerState {
-    icon: String,
-    name: String,
-    value: f64,
-}
-
-struct ChangerModel {
-    monitor: gdk::Monitor,
-    watcher: Arc<Notify>,
-}
-
-#[derive(Debug, Clone)]
-enum ChangerInput {
-    Hide,
-    Show(ChangerState),
-}
-
-impl ChangerModel {
-    fn create(monitor: gdk::Monitor) -> Self {
-        ChangerModel {
-            monitor,
-            watcher: Arc::new(Notify::new()),
-        }
-    }
-}
-
-#[relm4::component]
-impl Component for ChangerModel {
-    type Init = ChangerModel;
-    type Input = ChangerInput;
-    type Output = ();
-    type CommandOutput = ();
-
-    view! {
-        #[name(window)] gtk::Window {
-            init_layer_shell: (),
-            set_monitor: &model.monitor,
-            set_layer: Layer::Overlay,
-            set_anchor: (Edge::Bottom, true),
-            set_margin: (Edge::Bottom, 40),
-            add_css_class: "changer",
-            set_visible: false,
-
-            gtk::Grid {
-                set_column_spacing: 16,
-                set_row_spacing: 8,
-                set_halign: Align::Center,
-                set_valign: Align::Center,
-
-                attach[0, 0, 1, 2]: icon = &gtk::Image {
-                    set_icon_size: IconSize::Large,
-                },
-                attach[1, 0, 1, 1]: name = &gtk::Label,
-                attach[1, 1, 1, 1]: value = &gtk::ProgressBar,
-            },
-        }
-    }
-
-    fn init(
-        params: Self::Init,
-        root: Self::Root,
-        sender: ComponentSender<Self>,
-    ) -> ComponentParts<Self> {
-        let model = params;
-
-        let widgets = view_output!();
-
-        let notify = Arc::clone(&model.watcher);
-        relm4::spawn(async move {
-            loop {
-                let event = tokio::time::timeout(Duration::from_secs(1), notify.notified()).await;
-                if event.is_err() {
-                    sender.input(ChangerInput::Hide);
-                }
-            }
-        });
-
-        ComponentParts { model, widgets }
-    }
-
-    fn update_with_view(
-        &mut self,
-        ui: &mut Self::Widgets,
-        message: Self::Input,
-        _sender: ComponentSender<Self>,
-        _root: &Self::Root,
-    ) {
-        match message {
-            ChangerInput::Hide => ui.window.set_visible(false),
-            ChangerInput::Show(state) => {
-                ui.window.set_visible(true);
-                ui.name.set_text(&state.name);
-                ui.icon.set_icon_name(Some(&state.icon));
-                ui.value.set_fraction(state.value);
-                self.watcher.notify_one();
-            }
-        }
-    }
 }
 
 struct AppModel {
