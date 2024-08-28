@@ -24,6 +24,65 @@ use tokio::io::{AsyncBufReadExt, BufReader, Interest};
 use tokio::sync::{mpsc, Notify};
 use upower_dbus::{BatteryState, BatteryType, DeviceProxy, UPowerProxy};
 
+struct CriticalModel {
+    monitor: gdk::Monitor,
+}
+
+#[derive(Debug, Clone)]
+enum CriticalInput {
+    // TODO: support more than one critical notifications
+    Show(String),
+    Hide,
+}
+
+#[relm4::component]
+impl Component for CriticalModel {
+    type Init = CriticalModel;
+    type Input = CriticalInput;
+    type Output = ();
+    type CommandOutput = ();
+
+    view! {
+        #[name(window)] gtk::Window {
+            init_layer_shell: (),
+            set_monitor: &model.monitor,
+            set_layer: Layer::Overlay,
+            set_anchor: (Edge::Top, true),
+            set_margin: (Edge::Top, 40),
+            add_css_class: "critical",
+            set_visible: false,
+
+            #[name(text)] gtk::Label,
+        }
+    }
+
+    fn init(
+        model: Self::Init,
+        root: Self::Root,
+        _sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let widgets = view_output!();
+
+        ComponentParts { model, widgets }
+    }
+
+    fn update_with_view(
+        &mut self,
+        ui: &mut Self::Widgets,
+        message: Self::Input,
+        _sender: ComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
+        match message {
+            CriticalInput::Hide => ui.window.set_visible(false),
+            CriticalInput::Show(state) => {
+                ui.window.set_visible(true);
+                ui.text.set_text(&state);
+            }
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 struct ChangerState {
     icon: String,
@@ -237,6 +296,12 @@ struct Power {
     icon: String,
 }
 
+impl Power {
+    fn is_critical(&self) -> bool {
+        self.present && !self.charging && self.level < 10.
+    }
+}
+
 #[derive(Debug, Default)]
 struct AppState {
     layout: XkbLayout,
@@ -255,6 +320,7 @@ struct AppState {
 struct AppModel {
     monitor: gdk::Monitor,
     changer: Controller<ChangerModel>,
+    critical: Controller<CriticalModel>,
     state: Arc<RwLock<AppState>>,
 }
 
@@ -275,6 +341,11 @@ impl AppModel {
         Self {
             changer: ChangerModel::builder()
                 .launch(ChangerModel::create(monitor.clone()))
+                .detach(),
+            critical: CriticalModel::builder()
+                .launch(CriticalModel {
+                    monitor: monitor.clone(),
+                })
                 .detach(),
 
             monitor,
@@ -437,6 +508,12 @@ impl Component for AppModel {
             AppInput::Power => {
                 ui.power.set_visible(state.power.present);
                 ui.power.set_icon_name(Some(&state.power.icon));
+
+                self.critical.sender().emit(if state.power.is_critical() {
+                    CriticalInput::Show("Connect power NOW!".into())
+                } else {
+                    CriticalInput::Hide
+                });
             }
             AppInput::PowerChanged => {
                 self.changer.sender().emit(ChangerInput::Show(ChangerState {

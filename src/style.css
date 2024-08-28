@@ -5,6 +5,12 @@
     font-feature-settings: "tnum";
 }
 
+window.critical {
+    background: #400d;
+    border-radius: 20px;
+    padding: 10px 20px;
+}
+
 window.changer {
     background: none;
 }
