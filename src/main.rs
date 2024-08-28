@@ -1,5 +1,3 @@
-#![feature(async_closure)]
-
 use alsa::mixer::{Mixer, Selem, SelemChannelId};
 use alsa::poll::{pollfd, Descriptors};
 use anyhow::{bail, ensure, Context, Result};
