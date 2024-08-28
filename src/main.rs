@@ -1030,7 +1030,7 @@ fn main() -> glib::ExitCode {
         let app = app.to_owned();
         start.call_once(move || {
             std::mem::forget(app.hold());
-            relm4::set_global_css_from_file("/home/yuki/kek/swaynyaad/src/style.css").unwrap();
+            relm4::set_global_css(include_str!("style.css"));
             relm4::spawn_local(async move {
                 if let Err(e) = main_loop().await {
                     eprintln!("{e:?}");
