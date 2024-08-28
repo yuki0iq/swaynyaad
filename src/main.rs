@@ -1,3 +1,5 @@
+#![feature(async_closure)]
+
 use alsa::mixer::{Mixer, Selem, SelemChannelId};
 use alsa::poll::{pollfd, Descriptors};
 use anyhow::{bail, ensure, Context, Result};
@@ -12,6 +14,7 @@ use relm4::prelude::*;
 use rustix::system;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::marker::Unpin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use swayipc_async::{Floating, NodeType};
@@ -19,7 +22,7 @@ use tokio::fs::File;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncBufReadExt, BufReader, Interest};
 use tokio::sync::{mpsc, Notify};
-use upower_dbus::{DeviceProxy, UPowerProxy};
+use upower_dbus::{BatteryState, BatteryType, DeviceProxy, UPowerProxy};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
@@ -130,6 +133,8 @@ impl Pulse {
 #[derive(Debug, Default)]
 struct Power {
     present: bool,
+    charging: bool,
+    level: f64,
     icon: String,
 }
 
@@ -264,8 +269,7 @@ enum AppInput {
     Sysinfo,
     Pulse(PulseKind),
     Power,
-    PowerPlugged,
-    PowerUnplugged,
+    PowerChanged,
 }
 
 impl AppModel {
@@ -364,6 +368,7 @@ impl Component for AppModel {
             AppInput::Pulse(PulseKind::Source),
             AppInput::Pulse(PulseKind::Sink),
             AppInput::Power,
+            AppInput::PowerChanged,
         ] {
             sender.input_sender().emit(event);
         }
@@ -437,19 +442,12 @@ impl Component for AppModel {
                 ui.power.set_visible(state.power.present);
                 ui.power.set_icon_name(Some(&state.power.icon));
             }
-            AppInput::PowerPlugged => {
+            AppInput::PowerChanged => {
                 self.changer.sender().emit(ChangerInput::Show(ChangerState {
-                    icon: "ac-adapter-symbolic".into(),
-                    name: "AC plugged".into(),
-                    value: 100.,
-                }))
-            }
-            AppInput::PowerUnplugged => {
-                self.changer.sender().emit(ChangerInput::Show(ChangerState {
-                    icon: "battery-symbolic".into(),
-                    name: "On battery".into(),
-                    value: 0.,
-                }))
+                    icon: state.power.icon.clone(),
+                    name: state.power.icon.clone(), // TODO
+                    value: state.power.level,
+                }));
             }
         }
     }
@@ -735,43 +733,68 @@ async fn sound_updater(
     Ok(())
 }
 
-async fn upower_show(
+async fn upower_state(
     tx: mpsc::UnboundedSender<AppInput>,
     state: Arc<RwLock<AppState>>,
     device: DeviceProxy<'_>,
 ) -> Result<()> {
-    let mut changed = device.receive_is_present_changed().await;
-    while let Some(value) = changed.next().await {
-        state.write().unwrap().power.present = value.get().await?;
-        tx.send(AppInput::Power).context("upower present")?;
+    let present = device.is_present().await?;
+    let level = device.percentage().await?;
+
+    let bat_state = device.state().await?;
+    let charging = matches!(
+        bat_state,
+        BatteryState::PendingCharge | BatteryState::Charging
+    );
+
+    let bat_type = device.type_().await?;
+    let icon = match bat_type {
+        BatteryType::LinePower => "ac-adapter-symbolic".into(),
+        _ => match bat_state {
+            BatteryState::Empty => "battery-empty-symbolic".into(),
+            BatteryState::FullyCharged => "battery-full-charged-symbolic".into(),
+            BatteryState::PendingCharge
+            | BatteryState::Charging
+            | BatteryState::PendingDischarge
+            | BatteryState::Discharging => format!(
+                "battery-level-{}{}-symbolic",
+                (level / 10.).floor() * 10.,
+                if charging { "-charging" } else { "" }
+            ),
+            _ => "battery-missing-symbolic".into(),
+        },
+    };
+
+    let changed;
+    {
+        let power = &mut state.write().unwrap().power;
+        let new_power = Power {
+            present,
+            level,
+            icon,
+            charging,
+        };
+
+        changed = power.present != new_power.present || power.charging != new_power.charging;
+
+        *power = new_power;
     }
+
+    tx.send(AppInput::Power).context("upower init")?;
+    if changed {
+        tx.send(AppInput::PowerChanged).context("upower changed")?;
+    }
+
     Ok(())
 }
 
-async fn upower_icon(
-    tx: mpsc::UnboundedSender<AppInput>,
-    state: Arc<RwLock<AppState>>,
-    device: DeviceProxy<'_>,
-) -> Result<()> {
-    let mut changed = device.receive_icon_name_changed().await;
-    while let Some(value) = changed.next().await {
-        state.write().unwrap().power.icon = value.get().await?;
-        tx.send(AppInput::Power).context("upower icon")?;
+async fn stream_notify<S, T>(notify: Arc<Notify>, mut stream: S)
+where
+    S: futures::stream::Stream<Item = T> + Unpin,
+{
+    while stream.next().await.is_some() {
+        notify.notify_one();
     }
-    Ok(())
-}
-
-async fn upower_plug(tx: mpsc::UnboundedSender<AppInput>, upower: UPowerProxy<'_>) -> Result<()> {
-    let mut changed = upower.receive_on_battery_changed().await;
-    while let Some(value) = changed.next().await {
-        tx.send(if value.get().await? {
-            AppInput::PowerPlugged
-        } else {
-            AppInput::PowerUnplugged
-        })
-        .context("upower plug")?;
-    }
-    Ok(())
 }
 
 async fn upower_listener(
@@ -782,16 +805,26 @@ async fn upower_listener(
     let upower = UPowerProxy::new(&conn).await.context("bind to upower")?;
     let device = upower.get_display_device().await?;
 
-    let present = device.is_present().await?;
-    let icon = device.icon_name().await?;
-    state.write().unwrap().power = Power { present, icon };
-    tx.send(AppInput::Power).context("upower init")?;
+    let notify = Arc::new(Notify::new());
 
-    tokio::spawn(upower_show(tx.clone(), Arc::clone(&state), device.clone()));
-    tokio::spawn(upower_icon(tx.clone(), Arc::clone(&state), device.clone()));
-    tokio::spawn(upower_plug(tx.clone(), upower.clone()));
+    tokio::spawn(stream_notify(
+        Arc::clone(&notify),
+        device.receive_is_present_changed().await,
+    ));
+    tokio::spawn(stream_notify(
+        Arc::clone(&notify),
+        device.receive_percentage_changed().await,
+    ));
+    tokio::spawn(stream_notify(
+        Arc::clone(&notify),
+        device.receive_icon_name_changed().await,
+    ));
 
-    Ok(())
+    loop {
+        upower_state(tx.clone(), Arc::clone(&state), device.clone()).await?;
+
+        let _ = notify.notified().await;
+    }
 }
 
 async fn zbus_listener(
@@ -814,10 +847,18 @@ async fn zbus_listener(
 fn play_sound(
     manager: &mut AudioManager,
     cache: &mut HashMap<&'static str, StaticSoundData>,
+    state: &AppState,
     event: &AppInput,
 ) -> Result<()> {
     let name = match event {
         AppInput::Pulse(_) => "audio-volume-change",
+        AppInput::PowerChanged => {
+            if state.power.charging {
+                "power-plug"
+            } else {
+                "power-unplug"
+            }
+        }
 
         _ => return Ok(()),
     };
@@ -857,7 +898,13 @@ async fn main_loop() -> Result<()> {
     loop {
         let event = rx.recv().await.context("receive event")?;
         let AppInput::Outputs(new_outputs) = event else {
-            play_sound(&mut manager, &mut sound_cache, &event).context("play sound")?;
+            play_sound(
+                &mut manager,
+                &mut sound_cache,
+                &state.read().unwrap(),
+                &event,
+            )
+            .context("play sound")?;
 
             // TODO use broadcast channels (drop relm4)
             for controller in windows.values() {
