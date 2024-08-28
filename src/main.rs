@@ -84,12 +84,10 @@ impl Component for ChangerModel {
     }
 
     fn init(
-        params: Self::Init,
+        model: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let model = params;
-
         let widgets = view_output!();
 
         let notify = Arc::clone(&model.watcher);
@@ -352,12 +350,10 @@ impl Component for AppModel {
     }
 
     fn init(
-        params: Self::Init,
+        model: Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let model = params;
-
         let widgets = view_output!();
 
         for event in [
