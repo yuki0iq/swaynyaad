@@ -994,11 +994,17 @@ async fn main_loop() -> Result<()> {
             let monitor = monitors
                 .iter()
                 .find(|monitor| monitor.connector().as_deref() == Some(added))
-                .context("unknown monitor")?
-                .clone();
+                .context("unknown monitor");
+            let Ok(monitor) = monitor else {
+                eprintln!(
+                    "GDK and Sway monitor mismatch! {} exists, but not for GDK",
+                    added
+                );
+                continue;
+            };
 
             let controller = AppModel::builder()
-                .launch(AppModel::create(Arc::clone(&state), monitor))
+                .launch(AppModel::create(Arc::clone(&state), monitor.clone()))
                 .detach();
 
             ensure!(
