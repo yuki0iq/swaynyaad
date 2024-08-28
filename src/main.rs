@@ -6,6 +6,7 @@ use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
 use gtk::{gdk, glib, Align, IconSize};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
+use log::{debug, error, info, trace, warn};
 use relm4::prelude::*;
 use rustix::system;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -58,6 +59,7 @@ impl Component for CriticalModel {
         root: Self::Root,
         _sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        info!("Creating Critical for {:?}", model.monitor.connector());
         let widgets = view_output!();
 
         ComponentParts { model, widgets }
@@ -144,6 +146,7 @@ impl Component for ChangerModel {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        info!("Creating Changer for {:?}", model.monitor.connector());
         let widgets = view_output!();
 
         let notify = Arc::clone(&model.watcher);
@@ -422,6 +425,7 @@ impl Component for AppModel {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        info!("Creating App for {:?}", model.monitor.connector());
         let widgets = view_output!();
 
         for event in [
@@ -528,8 +532,11 @@ async fn time_updater(
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
     let mut timer = tokio::time::interval(Duration::from_secs(1));
+    info!("Started timer-based listener");
 
     loop {
+        trace!("Timer ticked");
+
         state.write().unwrap().time = Local::now();
         tx.send(AppInput::Time).context("send time")?;
 
@@ -583,6 +590,8 @@ async fn sway_state_listener(
 ) -> Result<()> {
     use swayipc_async::{Connection, Event, EventType};
 
+    info!("Starting sway listener");
+
     let mut conn = Connection::new().await.context("initial connection")?;
     let mut stream = Connection::new()
         .await
@@ -596,6 +605,8 @@ async fn sway_state_listener(
         .await
         .context("subscribe to events")?;
 
+    info!("Sway listener ready");
+
     sway_fetch_output(&tx, &mut conn, Arc::clone(&state))
         .await
         .context("init output")?;
@@ -605,6 +616,7 @@ async fn sway_state_listener(
 
     while let Some(event) = stream.next().await {
         let Ok(event) = event else { continue };
+        trace!("Received sway event {event:?}");
         match event {
             Event::Input(_) => sway_fetch_input(&tx, &mut conn, Arc::clone(&state))
                 .await
@@ -629,6 +641,8 @@ async fn sway_fetch_input(
     conn: &mut swayipc_async::Connection,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
+    debug!("Fetching input information");
+
     let inputs = conn.get_inputs().await.context("get inputs")?;
 
     let layout_name = inputs
@@ -652,6 +666,8 @@ async fn sway_fetch_output(
     conn: &mut swayipc_async::Connection,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
+    debug!("Fetching outputs information");
+
     let outputs = conn
         .get_outputs()
         .await
@@ -673,6 +689,8 @@ async fn sway_fetch_workspace(
     conn: &mut swayipc_async::Connection,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
+    debug!("Fetching workspace information");
+
     let workspaces = conn.get_workspaces().await.context("get workspaces")?;
     let workspaces_existing = workspaces.iter().map(|ws| ws.num).collect::<BTreeSet<_>>();
     let workspaces_urgent = workspaces
@@ -735,11 +753,15 @@ async fn sway_fetch_workspace(
 }
 
 async fn alsa_loop(pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>) -> Result<()> {
+    info!("Starting ALSA main loop");
     let mixer = Mixer::new("default", false).context("alsa mixer create")?;
+
+    info!("ALSA main loop ready");
 
     let mut fds: Vec<pollfd> = vec![];
     loop {
         mixer.handle_events().context("alsa mixer handle events")?;
+        trace!("ALSA loop ticked");
 
         for elem in mixer.iter() {
             let Some(selem) = Selem::new(elem) else {
@@ -757,6 +779,7 @@ async fn alsa_loop(pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>) -> Resul
                 .ok()
                 .context("send alsa")?;
         }
+        trace!("ALSA post-loop volume dispatch");
 
         let count = Descriptors::count(&mixer);
         fds.resize_with(count, || pollfd {
@@ -784,8 +807,11 @@ async fn sound_updater(
     tx: mpsc::UnboundedSender<AppInput>,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
+    info!("Starting ALSA mixer updater");
     let (pulse_tx, mut pulse_rx) = mpsc::unbounded_channel();
     relm4::spawn(alsa_loop(pulse_tx));
+
+    info!("Started ALSA mixer, ready");
 
     while let Some((kind, pulse)) = pulse_rx.recv().await {
         let mut state = state.write().unwrap();
@@ -796,6 +822,7 @@ async fn sound_updater(
         if *slot == pulse {
             continue;
         }
+        debug!("ALSA state changed to {pulse:?}");
         *slot = pulse;
         tx.send(AppInput::Pulse(kind)).context("send pulse")?;
     }
@@ -847,6 +874,8 @@ async fn upower_state(
 
         changed = power.present != new_power.present || power.charging != new_power.charging;
 
+        debug!("UPower state: {new_power:?}, changed? {changed}");
+
         *power = new_power;
     }
 
@@ -872,8 +901,12 @@ async fn upower_listener(
     state: Arc<RwLock<AppState>>,
     conn: zbus::Connection,
 ) -> Result<()> {
+    debug!("Starting UPower listeners...");
+
     let upower = UPowerProxy::new(&conn).await.context("bind to upower")?;
     let device = upower.get_display_device().await?;
+
+    debug!("Connected to UPower instance");
 
     let notify = Arc::new(Notify::new());
 
@@ -890,7 +923,10 @@ async fn upower_listener(
         device.receive_icon_name_changed().await,
     ));
 
+    info!("Started UPower listeners, ready");
+
     loop {
+        debug!("UPower state changed");
         upower_state(tx.clone(), Arc::clone(&state), device.clone()).await?;
 
         let _ = notify.notified().await;
@@ -901,6 +937,8 @@ async fn zbus_listener(
     tx: mpsc::UnboundedSender<AppInput>,
     state: Arc<RwLock<AppState>>,
 ) -> Result<()> {
+    debug!("Starting zbus listeners...");
+
     let conn = zbus::Connection::system()
         .await
         .context("connect to system bus")?;
@@ -910,6 +948,8 @@ async fn zbus_listener(
         Arc::clone(&state),
         conn.clone(),
     ));
+
+    info!("Started zbus listeners");
 
     Ok(())
 }
@@ -932,6 +972,8 @@ fn play_sound(
         _ => return Ok(()),
     };
 
+    debug!("Playing event {name:?} with libcanberra");
+
     ensure!(
         0 == unsafe {
             libcanberra::ca_context_play(
@@ -948,6 +990,8 @@ fn play_sound(
 }
 
 async fn main_loop() -> Result<()> {
+    debug!("Entered main loop");
+
     let (tx, mut rx) = mpsc::unbounded_channel();
     let state = Arc::new(RwLock::new(AppState::default()));
 
@@ -956,13 +1000,20 @@ async fn main_loop() -> Result<()> {
     relm4::spawn(sound_updater(tx.clone(), Arc::clone(&state)));
     relm4::spawn(zbus_listener(tx.clone(), Arc::clone(&state)));
 
+    debug!("State updaters spawned");
+
     let mut windows: HashMap<String, Controller<AppModel>> = HashMap::new();
 
     let mut context = std::ptr::null_mut();
     ensure!(0 == unsafe { libcanberra::ca_context_create(&mut context) });
+    debug!("libcanberra context created");
+
+    info!("Ready dispatching events");
 
     loop {
         let event = rx.recv().await.context("receive event")?;
+        debug!("Received {event:?}");
+        trace!("Current state is {:?}", state.read().unwrap());
         let AppInput::Outputs(new_outputs) = event else {
             play_sound(context, &state.read().unwrap(), &event).context("play sound")?;
 
@@ -994,7 +1045,7 @@ async fn main_loop() -> Result<()> {
                 .find(|monitor| monitor.connector().as_deref() == Some(added))
                 .context("unknown monitor");
             let Ok(monitor) = monitor else {
-                eprintln!(
+                warn!(
                     "GDK and Sway monitor mismatch! {} exists, but not for GDK",
                     added
                 );
@@ -1014,19 +1065,26 @@ async fn main_loop() -> Result<()> {
 }
 
 fn main() -> glib::ExitCode {
+    env_logger::init();
+    info!("swaynyaad is starting");
+
     let app = gtk::Application::builder()
         .application_id("sylfn.swaynyaad.Bar")
         .build();
+    debug!("Created gtk::Application");
 
     let start = std::sync::Once::new();
     app.connect_activate(move |app| {
+        debug!("Received activate signal");
         let app = app.to_owned();
         start.call_once(move || {
+            debug!("Starting relm4");
             std::mem::forget(app.hold());
             relm4::set_global_css(include_str!("style.css"));
             relm4::spawn_local(async move {
+                debug!("Entering main loop...");
                 if let Err(e) = main_loop().await {
-                    eprintln!("{e:?}");
+                    error!("Main loop: {e:?}");
                     std::process::abort();
                 }
             });
