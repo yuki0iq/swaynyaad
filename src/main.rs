@@ -8,6 +8,7 @@ use gtk::{gdk, glib, Align, IconSize};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use log::{debug, error, info, trace, warn};
 use relm4::prelude::*;
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
 use rustix::system;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::marker::Unpin;
@@ -19,8 +20,6 @@ use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncBufReadExt, BufReader, Interest};
 use tokio::sync::{mpsc, Notify};
 use upower_dbus::{BatteryState, BatteryType, DeviceProxy, UPowerProxy};
-
-mod libcanberra;
 
 struct CriticalModel {
     monitor: gdk::Monitor,
@@ -955,36 +954,31 @@ async fn zbus_listener(
 }
 
 fn play_sound(
-    context: *mut libcanberra::ca_context,
+    stream_handle: &OutputStreamHandle,
     state: &AppState,
     event: &AppInput,
 ) -> Result<()> {
     let name = match event {
-        AppInput::Pulse(_) => c"audio-volume-change",
+        AppInput::Pulse(_) => "audio-volume-change",
         AppInput::PowerChanged => {
             if state.power.charging {
-                c"power-plug"
+                "power-plug"
             } else {
-                c"power-unplug"
+                "power-unplug"
             }
         }
 
         _ => return Ok(()),
     };
 
-    debug!("Playing event {name:?} with libcanberra");
+    debug!("Playing event {name} with rodio");
 
-    ensure!(
-        0 == unsafe {
-            libcanberra::ca_context_play(
-                context,
-                0,
-                libcanberra::CA_PROP_EVENT_ID.as_ptr(),
-                name.as_ptr(),
-                0,
-            )
-        }
-    );
+    let path = format!("/usr/share/sounds/freedesktop/stereo/{name}.oga");
+    let file = std::io::BufReader::new(std::fs::File::open(path).context("open audio file")?);
+    let source = Decoder::new(file).context("decode audio")?;
+    stream_handle
+        .play_raw(source.convert_samples())
+        .context("play audio")?;
 
     Ok(())
 }
@@ -1004,9 +998,7 @@ async fn main_loop() -> Result<()> {
 
     let mut windows: HashMap<String, Controller<AppModel>> = HashMap::new();
 
-    let mut context = std::ptr::null_mut();
-    ensure!(0 == unsafe { libcanberra::ca_context_create(&mut context) });
-    debug!("libcanberra context created");
+    let (_stream, stream_handle) = OutputStream::try_default().context("create output stream")?;
 
     info!("Ready dispatching events");
 
@@ -1015,7 +1007,7 @@ async fn main_loop() -> Result<()> {
         debug!("Received {event:?}");
         trace!("Current state is {:?}", state.read().unwrap());
         let AppInput::Outputs(new_outputs) = event else {
-            play_sound(context, &state.read().unwrap(), &event).context("play sound")?;
+            play_sound(&stream_handle, &state.read().unwrap(), &event).context("play sound")?;
 
             // TODO use broadcast channels (drop relm4)
             for controller in windows.values() {
