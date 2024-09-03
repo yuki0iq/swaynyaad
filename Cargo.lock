@@ -1956,6 +1956,7 @@ dependencies = [
  "futures",
  "futures-lite",
  "gtk4-layer-shell",
+ "heck",
  "log",
  "relm4",
  "rodio",

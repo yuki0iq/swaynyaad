@@ -6,6 +6,7 @@ use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
 use gtk::{gdk, glib, Align, IconSize};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
+use heck::ToTitleCase;
 use log::{debug, error, info, trace, warn};
 use relm4::prelude::*;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
@@ -518,7 +519,12 @@ impl Component for AppModel {
             AppInput::PowerChanged => {
                 self.changer.sender().emit(ChangerInput::Show(ChangerState {
                     icon: state.power.icon.clone(),
-                    name: state.power.icon.clone(), // TODO
+                    name: state
+                        .power
+                        .icon
+                        .strip_suffix("-symbolic")
+                        .unwrap()
+                        .to_title_case(),
                     value: state.power.level,
                 }));
             }
