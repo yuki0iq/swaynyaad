@@ -14,8 +14,8 @@ mod critical;
 mod listeners;
 mod state;
 
-use self::bar::{AppInput, AppModel};
-use self::state::AppState;
+use crate::bar::{AppInput, AppModel};
+use crate::state::AppState;
 
 fn play_sound(
     stream_handle: &OutputStreamHandle,
