@@ -46,6 +46,8 @@ fn adjust_windows(
     windows: &mut HashMap<String, Controller<AppModel>>,
     new_outputs: HashSet<String>,
 ) -> Result<()> {
+    // XXX is it really needed to `Drop` bar windows instead of just hiding them?
+    // Check behavior of monitor used for layer shell vanishing
     windows.retain(|output, _| new_outputs.contains(output));
 
     let monitors = gdk::Display::default()
@@ -67,10 +69,7 @@ fn adjust_windows(
             .find(|monitor| monitor.connector().as_deref() == Some(added))
             .context("unknown monitor");
         let Ok(monitor) = monitor else {
-            warn!(
-                "GDK and Sway monitor mismatch! {} exists, but not for GDK",
-                added
-            );
+            warn!("GDK and Sway monitor mismatch! {added} exists, but not for GDK");
             continue;
         };
 
