@@ -1,60 +1,49 @@
-use alsa::mixer::{Mixer, Selem, SelemChannelId};
-use alsa::poll::{pollfd, Descriptors};
-use anyhow::{bail, ensure, Context, Result};
+use alsa::mixer::{Selem, SelemChannelId};
+use anyhow::{ensure, Context, Result};
 use chrono::{offset::Local, DateTime};
-use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
-use gtk::{gdk, glib, Align};
-use gtk4_layer_shell::{Edge, Layer, LayerShell};
-use heck::ToTitleCase;
+use gtk::{gdk, glib};
 use log::{debug, error, info, trace, warn};
 use relm4::prelude::*;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
-use rustix::system;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::marker::Unpin;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
-use swayipc_async::{Floating, NodeType};
-use tokio::fs::File;
-use tokio::io::unix::AsyncFd;
-use tokio::io::{AsyncBufReadExt, BufReader, Interest};
-use tokio::sync::{mpsc, Notify};
-use upower_dbus::{BatteryState, BatteryType, DeviceProxy, UPowerProxy};
+use tokio::sync::mpsc;
 
+mod bar;
 mod changer;
 mod critical;
+mod listeners;
 
-use self::changer::{ChangerInput, ChangerModel};
-use self::critical::{CriticalInput, CriticalModel};
+use self::bar::{AppInput, AppModel};
 
 #[derive(Debug, Default, Clone, PartialEq)]
-struct XkbLayout {
+pub(crate) struct XkbLayout {
     name: String,
     description: String,
 }
 
 #[derive(Debug, Default)]
-struct Node {
+pub(crate) struct Node {
     shell: String,
     app_id: Option<String>,
     floating: bool,
 }
 
 #[derive(Debug, Default)]
-struct Screen {
+pub(crate) struct Screen {
     workspace: Option<String>,
     focused: Option<Node>,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum PulseKind {
+pub(crate) enum PulseKind {
     Sink,
     Source,
 }
 
 #[derive(Debug, Default, PartialEq)]
-struct Pulse {
+pub(crate) struct Pulse {
     muted: bool,
     volume: i64,
     icon: String,
@@ -135,7 +124,7 @@ impl Pulse {
 }
 
 #[derive(Debug, Default)]
-struct Power {
+pub(crate) struct Power {
     present: bool,
     charging: bool,
     level: f64,
@@ -149,7 +138,7 @@ impl Power {
 }
 
 #[derive(Debug, Default)]
-struct AppState {
+pub(crate) struct AppState {
     layout: XkbLayout,
     time: DateTime<Local>,
     workspaces_urgent: Vec<i32>,
@@ -161,649 +150,6 @@ struct AppState {
     sink: Pulse,
     source: Pulse,
     power: Power,
-}
-
-struct AppModel {
-    monitor: gdk::Monitor,
-    changer: Controller<ChangerModel>,
-    critical: Controller<CriticalModel>,
-    state: Arc<RwLock<AppState>>,
-}
-
-#[derive(Debug, Clone)]
-enum AppInput {
-    Outputs(HashSet<String>),
-    Layout,
-    Time,
-    Workspaces,
-    Sysinfo,
-    Pulse(PulseKind),
-    Power,
-    PowerChanged,
-}
-
-impl AppModel {
-    fn create(state: Arc<RwLock<AppState>>, monitor: gdk::Monitor) -> Self {
-        Self {
-            changer: ChangerModel::builder()
-                .launch(ChangerModel::create(monitor.clone()))
-                .detach(),
-            critical: CriticalModel::builder()
-                .launch(CriticalModel {
-                    monitor: monitor.clone(),
-                })
-                .detach(),
-
-            monitor,
-            state,
-        }
-    }
-}
-
-#[relm4::component]
-impl Component for AppModel {
-    type Init = AppModel;
-    type Input = AppInput;
-    type Output = ();
-    type CommandOutput = ();
-
-    view! {
-        gtk::Window {
-            init_layer_shell: (),
-            set_monitor: &model.monitor,
-            set_layer: Layer::Top,
-            auto_exclusive_zone_enable: (),
-            set_anchor: (Edge::Left, true),
-            set_anchor: (Edge::Right, true),
-            set_anchor: (Edge::Top, true),
-            set_anchor: (Edge::Bottom, false),
-            add_css_class: "bar",
-            set_visible: true,
-
-            gtk::CenterBox {
-
-                #[wrap(Some)] set_start_widget = &gtk::Box {
-                    set_halign: Align::Start,
-
-                    #[name(workspace_number)] gtk::Button,
-                    #[name(window)] gtk::Button {
-                        #[wrap(Some)] set_child = &gtk::Box {
-                            set_spacing: 8,
-                            #[name(window_class)] gtk::Label,
-                            #[name(window_float)] gtk::Image {
-                                set_icon_name: Some("object-move-symbolic"),
-                                set_visible: false
-                            },
-                        },
-                    },
-                },
-
-                #[wrap(Some)] set_center_widget = &gtk::Box {
-                    set_halign: Align::Center,
-
-                    #[name(date)] gtk::Button,
-                    #[name(layout)] gtk::Button,
-                },
-
-                #[wrap(Some)] set_end_widget = &gtk::Box {
-                    set_halign: Align::End,
-
-                    gtk::Button {
-                        #[wrap(Some)] set_child = &gtk::Box {
-                            set_spacing: 8,
-                            #[name(workspaces_urgent)] gtk::Image {
-                                set_icon_name: Some("xfce-wm-stick"),
-                            },
-                            #[name(sink)] gtk::Image,
-                            #[name(source)] gtk::Image,
-                            #[name(load_average)] gtk::Label,
-                            #[name(used_ram)] gtk::Label,
-                            #[name(power)] gtk::Image,
-                        }
-                    },
-                },
-            },
-        }
-    }
-
-    fn init(
-        model: Self::Init,
-        root: Self::Root,
-        sender: ComponentSender<Self>,
-    ) -> ComponentParts<Self> {
-        info!("Creating App for {:?}", model.monitor.connector());
-        let widgets = view_output!();
-
-        for event in [
-            AppInput::Layout,
-            AppInput::Time,
-            AppInput::Workspaces,
-            AppInput::Sysinfo,
-            AppInput::Pulse(PulseKind::Source),
-            AppInput::Pulse(PulseKind::Sink),
-            AppInput::Power,
-            AppInput::PowerChanged,
-        ] {
-            sender.input_sender().emit(event);
-        }
-
-        ComponentParts { model, widgets }
-    }
-
-    fn update_with_view(
-        &mut self,
-        ui: &mut Self::Widgets,
-        message: Self::Input,
-        _sender: ComponentSender<Self>,
-        _root: &Self::Root,
-    ) {
-        let state = self.state.read().unwrap();
-        match message {
-            AppInput::Outputs(_) => {}
-            AppInput::Layout => ui.layout.set_label(&state.layout.name),
-            AppInput::Time => {
-                ui.date
-                    .set_label(&state.time.format("%a %b %-d \t %T").to_string());
-            }
-            AppInput::Workspaces => {
-                ui.workspaces_urgent
-                    .set_visible(!state.workspaces_urgent.is_empty());
-
-                let mon = self.monitor.connector();
-                let mon = mon.as_deref().unwrap();
-                let Some(screen) = state.screens.get(mon) else {
-                    return;
-                };
-                ui.workspace_number
-                    .set_label(screen.workspace.as_ref().unwrap());
-                ui.window.set_visible(screen.focused.is_some());
-
-                let Some(focused) = &screen.focused else {
-                    return;
-                };
-                ui.window_class
-                    .set_label(focused.app_id.as_ref().unwrap_or(&focused.shell));
-                ui.window_float.set_visible(focused.floating);
-            }
-            AppInput::Sysinfo => {
-                ui.load_average
-                    .set_text(&format!("{:0.2}", state.load_average));
-                ui.used_ram.set_text(&format!("{:0.2}", state.memory_usage));
-            }
-            AppInput::Pulse(kind) => {
-                let name = match kind {
-                    PulseKind::Sink => "Speakers",
-                    PulseKind::Source => "Microphone",
-                };
-                let pulse = match kind {
-                    PulseKind::Sink => &state.sink,
-                    PulseKind::Source => &state.source,
-                };
-                let ui_icon = match kind {
-                    PulseKind::Sink => &ui.sink,
-                    PulseKind::Source => &ui.source,
-                };
-
-                ui_icon.set_icon_name(Some(&pulse.icon));
-
-                self.changer.sender().emit(ChangerInput::Show {
-                    icon: pulse.icon.clone().into(),
-                    name: name.into(),
-                    value: pulse.volume as f64 / 100.,
-                });
-            }
-            AppInput::Power => {
-                ui.power.set_visible(state.power.present);
-                ui.power.set_icon_name(Some(&state.power.icon));
-
-                self.critical.sender().emit(if state.power.is_critical() {
-                    CriticalInput::Show("Connect power NOW!".into())
-                } else {
-                    CriticalInput::Hide
-                });
-            }
-            AppInput::PowerChanged => {
-                self.changer.sender().emit(ChangerInput::Show {
-                    icon: state.power.icon.clone().into(),
-                    name: state
-                        .power
-                        .icon
-                        .strip_suffix("-symbolic")
-                        .unwrap()
-                        .to_title_case()
-                        .into(),
-                    value: state.power.level,
-                });
-            }
-        }
-    }
-}
-
-async fn time_updater(
-    tx: mpsc::UnboundedSender<AppInput>,
-    state: Arc<RwLock<AppState>>,
-) -> Result<()> {
-    let mut timer = tokio::time::interval(Duration::from_secs(1));
-    info!("Started timer-based listener");
-
-    loop {
-        trace!("Timer ticked");
-
-        state.write().unwrap().time = Local::now();
-        tx.send(AppInput::Time).context("send time")?;
-
-        {
-            let sysinfo = system::sysinfo();
-
-            let meminfo = File::open("/proc/meminfo").await.context("read meminfo")?;
-            let mut meminfo = BufReader::new(meminfo).lines();
-            let mut total_ram: usize = 1;
-            let mut available_ram: usize = 0;
-            let mut count_fields = 2;
-            while let Some(line) = meminfo.next_line().await.context("line meminfo")? {
-                let entries = line.split_whitespace().collect::<Vec<_>>();
-                match entries[..] {
-                    [name, value, _unit] => match name {
-                        "MemTotal:" => {
-                            total_ram = value.parse().context("bad total_ram")?;
-                            count_fields -= 1;
-                        }
-                        "MemAvailable:" => {
-                            available_ram = value.parse().context("bad available_ram")?;
-                            count_fields -= 1;
-                        }
-                        _ => {}
-                    },
-                    [_name, _value] => {}
-                    _ => bail!("/proc/meminfo has unexpected format"),
-                }
-
-                if count_fields == 0 {
-                    break;
-                }
-            }
-
-            let load_average = sysinfo.loads[0] as f64 / 65536.;
-            let memory_usage = 1. - available_ram as f64 / total_ram as f64;
-
-            let mut state = state.write().unwrap();
-            state.load_average = load_average;
-            state.memory_usage = memory_usage;
-            tx.send(AppInput::Sysinfo).context("send sysinfo")?;
-        }
-
-        let _ = timer.tick().await;
-    }
-}
-
-async fn sway_state_listener(
-    tx: mpsc::UnboundedSender<AppInput>,
-    state: Arc<RwLock<AppState>>,
-) -> Result<()> {
-    use swayipc_async::{Connection, Event, EventType};
-
-    info!("Starting sway listener");
-
-    let mut conn = Connection::new().await.context("initial connection")?;
-    let mut stream = Connection::new()
-        .await
-        .context("event connection")?
-        .subscribe([
-            EventType::Input,
-            EventType::Output,
-            EventType::Workspace,
-            EventType::Window,
-        ])
-        .await
-        .context("subscribe to events")?;
-
-    info!("Sway listener ready");
-
-    sway_fetch_output(&tx, &mut conn, Arc::clone(&state))
-        .await
-        .context("init output")?;
-    sway_fetch_input(&tx, &mut conn, Arc::clone(&state))
-        .await
-        .context("init input")?;
-
-    while let Some(event) = stream.next().await {
-        let Ok(event) = event else { continue };
-        trace!("Received sway event {event:?}");
-        match event {
-            Event::Input(_) => sway_fetch_input(&tx, &mut conn, Arc::clone(&state))
-                .await
-                .context("fetch input")?,
-            Event::Output(_) => sway_fetch_output(&tx, &mut conn, Arc::clone(&state))
-                .await
-                .context("fetch output")?,
-            Event::Window(_) | Event::Workspace(_) => {
-                sway_fetch_workspace(&tx, &mut conn, Arc::clone(&state))
-                    .await
-                    .context("fetch workspace")?
-            }
-            _ => bail!("Unexpected event"),
-        }
-    }
-
-    Ok(())
-}
-
-async fn sway_fetch_input(
-    tx: &mpsc::UnboundedSender<AppInput>,
-    conn: &mut swayipc_async::Connection,
-    state: Arc<RwLock<AppState>>,
-) -> Result<()> {
-    debug!("Fetching input information");
-
-    let inputs = conn.get_inputs().await.context("get inputs")?;
-
-    let layout_name = inputs
-        .iter()
-        .find_map(|input| input.xkb_active_layout_name.as_ref());
-
-    state.write().unwrap().layout = XkbLayout {
-        name: layout_name
-            .map(|layout| layout[..2].to_ascii_lowercase())
-            .unwrap_or_else(|| "xx".into()),
-        description: layout_name
-            .cloned()
-            .unwrap_or_else(|| "Unknown layout".into()),
-    };
-    tx.send(AppInput::Layout).context("send layout")?;
-    Ok(())
-}
-
-async fn sway_fetch_output(
-    tx: &mpsc::UnboundedSender<AppInput>,
-    conn: &mut swayipc_async::Connection,
-    state: Arc<RwLock<AppState>>,
-) -> Result<()> {
-    debug!("Fetching outputs information");
-
-    let outputs = conn
-        .get_outputs()
-        .await
-        .context("get outputs")?
-        .into_iter()
-        .map(|out| out.name)
-        .collect::<HashSet<_>>();
-
-    tx.send(AppInput::Outputs(outputs))
-        .context("send outputs")?;
-
-    sway_fetch_workspace(tx, conn, state).await?;
-
-    Ok(())
-}
-
-async fn sway_fetch_workspace(
-    tx: &mpsc::UnboundedSender<AppInput>,
-    conn: &mut swayipc_async::Connection,
-    state: Arc<RwLock<AppState>>,
-) -> Result<()> {
-    debug!("Fetching workspace information");
-
-    let workspaces = conn.get_workspaces().await.context("get workspaces")?;
-    let workspaces_existing = workspaces.iter().map(|ws| ws.num).collect::<BTreeSet<_>>();
-    let workspaces_urgent = workspaces
-        .iter()
-        .filter(|ws| ws.urgent)
-        .map(|ws| ws.num)
-        .collect::<Vec<_>>();
-
-    let outputs = conn.get_outputs().await.context("get outputs")?;
-    let screen_focused = outputs
-        .iter()
-        .find(|output| output.focused)
-        .map(|output| output.name.clone());
-
-    let tree = conn.get_tree().await.context("get tree")?;
-
-    let mut screens = HashMap::new();
-    for output in outputs {
-        // This is O(total_nodes), and not O(workspaces)
-        let workspace = tree.find_as_ref(|node| {
-            node.node_type == NodeType::Workspace && node.name == output.current_workspace
-        });
-        let focused = workspace.and_then(|ws| {
-            ws.find_focused_as_ref(|node| {
-                matches!(node.node_type, NodeType::FloatingCon | NodeType::Con)
-                    && node.nodes.is_empty()
-            })
-        });
-        screens.insert(
-            output.name,
-            Screen {
-                workspace: output.current_workspace,
-                focused: focused.map(|node| Node {
-                    shell: serde_json::to_string(&node.shell).unwrap(),
-                    floating: matches!(
-                        node.floating,
-                        Some(Floating::AutoOn) | Some(Floating::UserOn)
-                    ),
-                    app_id: node.app_id.clone().or_else(|| {
-                        Some(format!(
-                            "{} [X11]",
-                            node.window_properties.as_ref()?.class.as_ref()?
-                        ))
-                    }),
-                }),
-            },
-        );
-    }
-
-    {
-        let mut state = state.write().unwrap();
-        state.workspaces_urgent = workspaces_urgent;
-        state.workspaces_existing = workspaces_existing;
-        state.screen_focused = screen_focused;
-        state.screens = screens;
-    }
-    tx.send(AppInput::Workspaces).context("send workspaces")?;
-
-    Ok(())
-}
-
-async fn alsa_loop(pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>) -> Result<()> {
-    info!("Starting ALSA main loop");
-    let mixer = Mixer::new("default", false).context("alsa mixer create")?;
-
-    info!("ALSA main loop ready");
-
-    let mut fds: Vec<pollfd> = vec![];
-    loop {
-        mixer.handle_events().context("alsa mixer handle events")?;
-        trace!("ALSA loop ticked");
-
-        for elem in mixer.iter() {
-            let Some(selem) = Selem::new(elem) else {
-                continue;
-            };
-
-            let kind = match selem.get_id().get_name() {
-                Ok("Master") => PulseKind::Sink,
-                Ok("Capture") => PulseKind::Source,
-                _ => continue,
-            };
-
-            pulse_tx
-                .send((kind, Pulse::make(selem, kind)))
-                .ok()
-                .context("send alsa")?;
-        }
-        trace!("ALSA post-loop volume dispatch");
-
-        let count = Descriptors::count(&mixer);
-        fds.resize_with(count, || pollfd {
-            fd: 0,
-            events: 0,
-            revents: 0,
-        });
-        Descriptors::fill(&mixer, &mut fds).context("fill descriptors")?;
-
-        let mut futs = Vec::with_capacity(count);
-        for pfd in &fds {
-            let fd = pfd.fd;
-            futs.push(tokio::spawn(async move {
-                let interest = Interest::ERROR | Interest::READABLE;
-                let afd = AsyncFd::with_interest(fd, interest).unwrap();
-                let res = afd.ready(interest).await;
-                res.map(|mut guard| guard.clear_ready())
-            }));
-        }
-        let _ = futures::future::select_all(futs).await;
-    }
-}
-
-async fn sound_updater(
-    tx: mpsc::UnboundedSender<AppInput>,
-    state: Arc<RwLock<AppState>>,
-) -> Result<()> {
-    info!("Starting ALSA mixer updater");
-    let (pulse_tx, mut pulse_rx) = mpsc::unbounded_channel();
-    relm4::spawn(alsa_loop(pulse_tx));
-
-    info!("Started ALSA mixer, ready");
-
-    while let Some((kind, pulse)) = pulse_rx.recv().await {
-        let mut state = state.write().unwrap();
-        let slot = match kind {
-            PulseKind::Sink => &mut state.sink,
-            PulseKind::Source => &mut state.source,
-        };
-        if *slot == pulse {
-            continue;
-        }
-        debug!("ALSA state changed to {pulse:?}");
-        *slot = pulse;
-        tx.send(AppInput::Pulse(kind)).context("send pulse")?;
-    }
-
-    Ok(())
-}
-
-async fn upower_state(
-    tx: mpsc::UnboundedSender<AppInput>,
-    state: Arc<RwLock<AppState>>,
-    device: DeviceProxy<'_>,
-) -> Result<()> {
-    let present = device.is_present().await?;
-    let level = device.percentage().await?;
-
-    let bat_state = device.state().await?;
-    let charging = matches!(
-        bat_state,
-        BatteryState::PendingCharge | BatteryState::Charging | BatteryState::FullyCharged
-    );
-
-    let bat_type = device.type_().await?;
-    let icon = match bat_type {
-        BatteryType::LinePower => "ac-adapter-symbolic".into(),
-        _ => match bat_state {
-            BatteryState::Empty => "battery-empty-symbolic".into(),
-            BatteryState::FullyCharged => "battery-full-charged-symbolic".into(),
-            BatteryState::PendingCharge
-            | BatteryState::Charging
-            | BatteryState::PendingDischarge
-            | BatteryState::Discharging => format!(
-                "battery-level-{}{}-symbolic",
-                (level / 10.).floor() * 10.,
-                if charging { "-charging" } else { "" }
-            ),
-            _ => "battery-missing-symbolic".into(),
-        },
-    };
-
-    let changed;
-    {
-        let power = &mut state.write().unwrap().power;
-        let new_power = Power {
-            present,
-            level,
-            icon,
-            charging,
-        };
-
-        changed = power.present != new_power.present || power.charging != new_power.charging;
-
-        debug!("UPower state: {new_power:?}, changed? {changed}");
-
-        *power = new_power;
-    }
-
-    tx.send(AppInput::Power).context("upower init")?;
-    if changed {
-        tx.send(AppInput::PowerChanged).context("upower changed")?;
-    }
-
-    Ok(())
-}
-
-async fn stream_notify<S, T>(notify: Arc<Notify>, mut stream: S)
-where
-    S: futures::stream::Stream<Item = T> + Unpin,
-{
-    while stream.next().await.is_some() {
-        notify.notify_one();
-    }
-}
-
-async fn upower_listener(
-    tx: mpsc::UnboundedSender<AppInput>,
-    state: Arc<RwLock<AppState>>,
-    conn: zbus::Connection,
-) -> Result<()> {
-    debug!("Starting UPower listeners...");
-
-    let upower = UPowerProxy::new(&conn).await.context("bind to upower")?;
-    let device = upower.get_display_device().await?;
-
-    debug!("Connected to UPower instance");
-
-    let notify = Arc::new(Notify::new());
-
-    tokio::spawn(stream_notify(
-        Arc::clone(&notify),
-        device.receive_is_present_changed().await,
-    ));
-    tokio::spawn(stream_notify(
-        Arc::clone(&notify),
-        device.receive_percentage_changed().await,
-    ));
-    tokio::spawn(stream_notify(
-        Arc::clone(&notify),
-        device.receive_icon_name_changed().await,
-    ));
-
-    info!("Started UPower listeners, ready");
-
-    loop {
-        debug!("UPower state changed");
-        upower_state(tx.clone(), Arc::clone(&state), device.clone()).await?;
-
-        let _ = notify.notified().await;
-    }
-}
-
-async fn zbus_listener(
-    tx: mpsc::UnboundedSender<AppInput>,
-    state: Arc<RwLock<AppState>>,
-) -> Result<()> {
-    debug!("Starting zbus listeners...");
-
-    let conn = zbus::Connection::system()
-        .await
-        .context("connect to system bus")?;
-
-    tokio::spawn(upower_listener(
-        tx.clone(),
-        Arc::clone(&state),
-        conn.clone(),
-    ));
-
-    info!("Started zbus listeners");
-
-    Ok(())
 }
 
 fn play_sound(
@@ -837,17 +183,10 @@ fn play_sound(
 }
 
 async fn main_loop() -> Result<()> {
-    debug!("Entered main loop");
-
     let (tx, mut rx) = mpsc::unbounded_channel();
     let state = Arc::new(RwLock::new(AppState::default()));
 
-    relm4::spawn(sway_state_listener(tx.clone(), Arc::clone(&state)));
-    relm4::spawn(time_updater(tx.clone(), Arc::clone(&state)));
-    relm4::spawn(sound_updater(tx.clone(), Arc::clone(&state)));
-    relm4::spawn(zbus_listener(tx.clone(), Arc::clone(&state)));
-
-    debug!("State updaters spawned");
+    listeners::start(tx, Arc::clone(&state));
 
     let mut windows: HashMap<String, Controller<AppModel>> = HashMap::new();
 
