@@ -4,7 +4,7 @@ use anyhow::{bail, ensure, Context, Result};
 use chrono::{offset::Local, DateTime};
 use futures_lite::stream::StreamExt;
 use gtk::prelude::*;
-use gtk::{gdk, glib, Align, IconSize};
+use gtk::{gdk, glib, Align};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use heck::ToTitleCase;
 use log::{debug, error, info, trace, warn};
@@ -22,165 +22,11 @@ use tokio::io::{AsyncBufReadExt, BufReader, Interest};
 use tokio::sync::{mpsc, Notify};
 use upower_dbus::{BatteryState, BatteryType, DeviceProxy, UPowerProxy};
 
-struct CriticalModel {
-    monitor: gdk::Monitor,
-}
+mod changer;
+mod critical;
 
-#[derive(Debug, Clone)]
-enum CriticalInput {
-    // TODO: support more than one critical notifications
-    Show(String),
-    Hide,
-}
-
-#[relm4::component]
-impl Component for CriticalModel {
-    type Init = CriticalModel;
-    type Input = CriticalInput;
-    type Output = ();
-    type CommandOutput = ();
-
-    view! {
-        #[name(window)] gtk::Window {
-            init_layer_shell: (),
-            set_monitor: &model.monitor,
-            set_layer: Layer::Overlay,
-            set_anchor: (Edge::Top, true),
-            set_margin: (Edge::Top, 40),
-            add_css_class: "critical",
-            set_visible: false,
-
-            #[name(text)] gtk::Label,
-        }
-    }
-
-    fn init(
-        model: Self::Init,
-        root: Self::Root,
-        _sender: ComponentSender<Self>,
-    ) -> ComponentParts<Self> {
-        info!("Creating Critical for {:?}", model.monitor.connector());
-        let widgets = view_output!();
-
-        ComponentParts { model, widgets }
-    }
-
-    fn update_with_view(
-        &mut self,
-        ui: &mut Self::Widgets,
-        message: Self::Input,
-        _sender: ComponentSender<Self>,
-        _root: &Self::Root,
-    ) {
-        match message {
-            CriticalInput::Hide => ui.window.set_visible(false),
-            CriticalInput::Show(state) => {
-                ui.window.set_visible(true);
-                ui.text.set_text(&state);
-            }
-        }
-    }
-}
-
-#[derive(Default, Debug, Clone)]
-struct ChangerState {
-    icon: String,
-    name: String,
-    value: f64,
-}
-
-struct ChangerModel {
-    monitor: gdk::Monitor,
-    watcher: Arc<Notify>,
-}
-
-#[derive(Debug, Clone)]
-enum ChangerInput {
-    Hide,
-    Show(ChangerState),
-}
-
-impl ChangerModel {
-    fn create(monitor: gdk::Monitor) -> Self {
-        ChangerModel {
-            monitor,
-            watcher: Arc::new(Notify::new()),
-        }
-    }
-}
-
-#[relm4::component]
-impl Component for ChangerModel {
-    type Init = ChangerModel;
-    type Input = ChangerInput;
-    type Output = ();
-    type CommandOutput = ();
-
-    view! {
-        #[name(window)] gtk::Window {
-            init_layer_shell: (),
-            set_monitor: &model.monitor,
-            set_layer: Layer::Overlay,
-            set_anchor: (Edge::Bottom, true),
-            set_margin: (Edge::Bottom, 40),
-            add_css_class: "changer",
-            set_visible: false,
-
-            gtk::Grid {
-                set_column_spacing: 16,
-                set_row_spacing: 8,
-                set_halign: Align::Center,
-                set_valign: Align::Center,
-
-                attach[0, 0, 1, 2]: icon = &gtk::Image {
-                    set_icon_size: IconSize::Large,
-                },
-                attach[1, 0, 1, 1]: name = &gtk::Label,
-                attach[1, 1, 1, 1]: value = &gtk::ProgressBar,
-            },
-        }
-    }
-
-    fn init(
-        model: Self::Init,
-        root: Self::Root,
-        sender: ComponentSender<Self>,
-    ) -> ComponentParts<Self> {
-        info!("Creating Changer for {:?}", model.monitor.connector());
-        let widgets = view_output!();
-
-        let notify = Arc::clone(&model.watcher);
-        relm4::spawn(async move {
-            loop {
-                let event = tokio::time::timeout(Duration::from_secs(1), notify.notified()).await;
-                if event.is_err() {
-                    sender.input(ChangerInput::Hide);
-                }
-            }
-        });
-
-        ComponentParts { model, widgets }
-    }
-
-    fn update_with_view(
-        &mut self,
-        ui: &mut Self::Widgets,
-        message: Self::Input,
-        _sender: ComponentSender<Self>,
-        _root: &Self::Root,
-    ) {
-        match message {
-            ChangerInput::Hide => ui.window.set_visible(false),
-            ChangerInput::Show(state) => {
-                ui.window.set_visible(true);
-                ui.name.set_text(&state.name);
-                ui.icon.set_icon_name(Some(&state.icon));
-                ui.value.set_fraction(state.value);
-                self.watcher.notify_one();
-            }
-        }
-    }
-}
+use self::changer::{ChangerInput, ChangerModel};
+use self::critical::{CriticalInput, CriticalModel};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct XkbLayout {
@@ -500,11 +346,11 @@ impl Component for AppModel {
 
                 ui_icon.set_icon_name(Some(&pulse.icon));
 
-                self.changer.sender().emit(ChangerInput::Show(ChangerState {
-                    icon: pulse.icon.clone(),
+                self.changer.sender().emit(ChangerInput::Show {
+                    icon: pulse.icon.clone().into(),
                     name: name.into(),
                     value: pulse.volume as f64 / 100.,
-                }));
+                });
             }
             AppInput::Power => {
                 ui.power.set_visible(state.power.present);
@@ -517,16 +363,17 @@ impl Component for AppModel {
                 });
             }
             AppInput::PowerChanged => {
-                self.changer.sender().emit(ChangerInput::Show(ChangerState {
-                    icon: state.power.icon.clone(),
+                self.changer.sender().emit(ChangerInput::Show {
+                    icon: state.power.icon.clone().into(),
                     name: state
                         .power
                         .icon
                         .strip_suffix("-symbolic")
                         .unwrap()
-                        .to_title_case(),
+                        .to_title_case()
+                        .into(),
                     value: state.power.level,
-                }));
+                });
             }
         }
     }
