@@ -1,5 +1,5 @@
 use crate::bar::AppInput;
-use crate::AppState;
+use crate::state::AppState;
 use anyhow::{bail, Context, Result};
 use chrono::offset::Local;
 use log::{info, trace};

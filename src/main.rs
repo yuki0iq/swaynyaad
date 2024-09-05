@@ -1,12 +1,10 @@
-use alsa::mixer::{Selem, SelemChannelId};
 use anyhow::{ensure, Context, Result};
-use chrono::{offset::Local, DateTime};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 use log::{debug, error, info, trace, warn};
 use relm4::prelude::*;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Source};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 
@@ -14,143 +12,10 @@ mod bar;
 mod changer;
 mod critical;
 mod listeners;
+mod state;
 
 use self::bar::{AppInput, AppModel};
-
-#[derive(Debug, Default, Clone, PartialEq)]
-pub(crate) struct XkbLayout {
-    name: String,
-    description: String,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct Node {
-    shell: String,
-    app_id: Option<String>,
-    floating: bool,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct Screen {
-    workspace: Option<String>,
-    focused: Option<Node>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum PulseKind {
-    Sink,
-    Source,
-}
-
-#[derive(Debug, Default, PartialEq)]
-pub(crate) struct Pulse {
-    muted: bool,
-    volume: i64,
-    icon: String,
-}
-
-impl Pulse {
-    fn parse(selem: Selem, kind: PulseKind) -> (i64, bool) {
-        let has_volume = match kind {
-            PulseKind::Sink => selem.has_playback_volume(),
-            PulseKind::Source => selem.has_capture_volume(),
-        };
-        if !has_volume {
-            // This device is probably nonexistent. Returning anything "normal" is okay
-            return (0, true);
-        }
-
-        let (volume_low, volume_high) = match kind {
-            PulseKind::Sink => selem.get_playback_volume_range(),
-            PulseKind::Source => selem.get_capture_volume_range(),
-        };
-
-        let mut globally_muted = match kind {
-            PulseKind::Sink => selem.has_playback_switch(),
-            PulseKind::Source => selem.has_capture_switch(),
-        };
-
-        let mut channel_count = 0;
-        let mut acc_volume = 0;
-        for scid in SelemChannelId::all() {
-            let Ok(cur_volume) = (match kind {
-                PulseKind::Sink => selem.get_playback_volume(*scid),
-                PulseKind::Source => selem.get_capture_volume(*scid),
-            }) else {
-                continue;
-            };
-
-            let cur_muted = match kind {
-                PulseKind::Sink => selem.get_playback_switch(*scid),
-                PulseKind::Source => selem.get_capture_switch(*scid),
-            } == Ok(0);
-
-            globally_muted = globally_muted && cur_muted;
-            channel_count += 1;
-            if !cur_muted {
-                acc_volume += cur_volume - volume_low;
-            }
-        }
-
-        let volume = 100 * acc_volume / (volume_high - volume_low) / channel_count;
-        (volume, globally_muted)
-    }
-
-    fn make(selem: Selem, kind: PulseKind) -> Self {
-        let (volume, muted) = Self::parse(selem, kind);
-
-        let icon = format!(
-            "{}-volume-{}",
-            match kind {
-                PulseKind::Sink => "audio",
-                PulseKind::Source => "mic",
-            },
-            match volume {
-                0 => "muted",
-                _ if muted => "muted",
-                v if v <= 25 => "low",
-                v if v <= 50 => "medium",
-                v if v <= 100 => "high",
-                _ => "high",
-            }
-        );
-
-        Self {
-            icon,
-            muted,
-            volume,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct Power {
-    present: bool,
-    charging: bool,
-    level: f64,
-    icon: String,
-}
-
-impl Power {
-    fn is_critical(&self) -> bool {
-        self.present && !self.charging && self.level < 10.
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct AppState {
-    layout: XkbLayout,
-    time: DateTime<Local>,
-    workspaces_urgent: Vec<i32>,
-    workspaces_existing: BTreeSet<i32>,
-    screen_focused: Option<String>,
-    screens: HashMap<String, Screen>,
-    load_average: f64,
-    memory_usage: f64,
-    sink: Pulse,
-    source: Pulse,
-    power: Power,
-}
+use self::state::AppState;
 
 fn play_sound(
     stream_handle: &OutputStreamHandle,

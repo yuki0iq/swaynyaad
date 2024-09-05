@@ -1,6 +1,5 @@
 use crate::bar::AppInput;
-use crate::AppState;
-use crate::{Pulse, PulseKind};
+use crate::state::{AppState, Pulse, PulseKind};
 use alsa::mixer::{Mixer, Selem};
 use alsa::poll::{pollfd, Descriptors};
 use anyhow::{Context, Result};

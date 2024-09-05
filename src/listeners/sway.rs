@@ -1,6 +1,5 @@
 use crate::bar::AppInput;
-use crate::AppState;
-use crate::{Node, Screen, XkbLayout};
+use crate::state::{AppState, Node, Screen, XkbLayout};
 use anyhow::{bail, Context, Result};
 use futures_lite::stream::StreamExt;
 use log::{debug, info, trace};

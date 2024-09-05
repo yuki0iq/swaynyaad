@@ -1,5 +1,5 @@
 use crate::bar::AppInput;
-use crate::AppState;
+use crate::state::AppState;
 use anyhow::{Context, Result};
 use log::{debug, info};
 use std::sync::{Arc, RwLock};

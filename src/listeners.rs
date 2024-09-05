@@ -1,5 +1,5 @@
 use crate::bar::AppInput;
-use crate::AppState;
+use crate::state::AppState;
 use log::trace;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;

@@ -1,6 +1,5 @@
 use crate::bar::AppInput;
-use crate::AppState;
-use crate::Power;
+use crate::state::{AppState, Power};
 use anyhow::{Context, Result};
 use futures_lite::stream::StreamExt;
 use log::{debug, info};

@@ -1,7 +1,6 @@
 use crate::changer::{ChangerInput, ChangerModel};
 use crate::critical::{CriticalInput, CriticalModel};
-use crate::AppState;
-use crate::PulseKind;
+use crate::state::{AppState, PulseKind};
 use gtk::{gdk, prelude::*, Align};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use heck::ToTitleCase;
