@@ -70,9 +70,12 @@ impl Component for AppModel {
 
                 #[wrap(Some)] set_start_widget = &gtk::Box {
                     set_halign: Align::Start,
+                    set_spacing: 8,
 
-                    #[name(workspace_number)] gtk::Button,
-                    #[name(window)] gtk::Button {
+                    gtk::MenuButton {
+                        #[wrap(Some)] #[name(workspace_number)] set_child = &gtk::Label,
+                    },
+                    #[name(window)] gtk::MenuButton {
                         #[wrap(Some)] set_child = &gtk::Box {
                             set_spacing: 8,
                             #[name(window_class)] gtk::Label,
@@ -86,6 +89,7 @@ impl Component for AppModel {
 
                 #[wrap(Some)] set_center_widget = &gtk::Box {
                     set_halign: Align::Center,
+                    set_spacing: 8,
 
                     gtk::MenuButton {
                         #[wrap(Some)] #[name(date)] set_child = &gtk::Label,
@@ -94,7 +98,9 @@ impl Component for AppModel {
                             #[wrap(Some)] set_child = &gtk::Calendar,
                         },
                     },
-                    #[name(layout)] gtk::Button,
+                    gtk::MenuButton {
+                        #[wrap(Some)] #[name(layout)] set_child = &gtk::Label,
+                    },
                 },
 
                 #[wrap(Some)] set_end_widget = &gtk::Box {
