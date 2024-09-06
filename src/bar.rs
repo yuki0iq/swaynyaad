@@ -87,7 +87,13 @@ impl Component for AppModel {
                 #[wrap(Some)] set_center_widget = &gtk::Box {
                     set_halign: Align::Center,
 
-                    #[name(date)] gtk::Button,
+                    gtk::MenuButton {
+                        #[wrap(Some)] #[name(date)] set_child = &gtk::Label,
+                        #[wrap(Some)] set_popover = &gtk::Popover {
+                            // TODO styles and date.
+                            #[wrap(Some)] set_child = &gtk::Calendar,
+                        },
+                    },
                     #[name(layout)] gtk::Button,
                 },
 
@@ -107,6 +113,7 @@ impl Component for AppModel {
                             #[name(power)] gtk::Image,
                         },
 
+                        // TODO populate "system" menu
                         #[wrap(Some)] set_popover = &gtk::Popover {
                             #[wrap(Some)] set_child = &gtk::Label {
                                 set_text: "NYAAA hello world",
