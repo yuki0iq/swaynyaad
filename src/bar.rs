@@ -94,7 +94,7 @@ impl Component for AppModel {
                 #[wrap(Some)] set_end_widget = &gtk::Box {
                     set_halign: Align::End,
 
-                    gtk::Button {
+                    gtk::MenuButton {
                         #[wrap(Some)] set_child = &gtk::Box {
                             set_spacing: 8,
                             #[name(workspaces_urgent)] gtk::Image {
@@ -105,7 +105,13 @@ impl Component for AppModel {
                             #[name(load_average)] gtk::Label,
                             #[name(used_ram)] gtk::Label,
                             #[name(power)] gtk::Image,
-                        }
+                        },
+
+                        #[wrap(Some)] set_popover = &gtk::Popover {
+                            #[wrap(Some)] set_child = &gtk::Label {
+                                set_text: "NYAAA hello world",
+                            },
+                        },
                     },
                 },
             },

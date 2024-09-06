@@ -72,3 +72,14 @@ progressbar.vertical > trough {
     }
 }
 
+popover {
+    > arrow, > contents {
+        background: #333 padding-box;
+        border: 1px solid #222;
+    }
+
+    > contents {
+        padding: 8px;
+        border-radius: 5px;
+    }
+}
