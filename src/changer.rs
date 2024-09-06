@@ -43,7 +43,7 @@ impl Component for ChangerModel {
             set_monitor: &model.monitor,
             set_layer: Layer::Overlay,
             set_anchor: (Edge::Bottom, true),
-            set_margin: (Edge::Bottom, 40),
+            set_margin: (Edge::Bottom, 48),
             add_css_class: "changer",
             set_visible: false,
 

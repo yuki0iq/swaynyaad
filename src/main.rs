@@ -26,7 +26,7 @@ fn main() -> glib::ExitCode {
             debug!("Starting relm4");
             std::mem::forget(app.hold());
 
-            relm4::set_global_css(include_str!("style.css"));
+            relm4::set_global_css(grass::include!("src/style.scss"));
             relm4::spawn_local(async move {
                 debug!("Entering main loop...");
                 if let Err(e) = app::main_loop().await {

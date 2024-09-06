@@ -1,0 +1,74 @@
+* {
+    all: unset;
+
+    font-family: Cantarell;
+    font-size: 16px;
+    font-weight: bold;
+    font-feature-settings: "tnum";
+    color: white;
+}
+
+.normal-icons {
+    -gtk-icon-size: 16px;
+}
+
+.large-icons {
+    -gtk-icon-size: 32px;
+}
+
+progressbar {
+    trough {
+        border-radius: 4px;
+        background-color: #111;
+        progress {
+            border-radius: 4px;
+            background-color: white;
+        }
+    }
+}
+
+progressbar.horizontal > trough {
+    min-width: 160px;
+    min-height: 4px;
+    progress {
+        min-height: inherit;
+    }
+}
+
+progressbar.vertical > trough {
+    min-height: 80px;
+    min-width: 4px;
+    progress {
+        min-width: inherit;
+    }
+}
+
+.critical {
+    background: #400d;
+    border-radius: 20px;
+    padding: 10px 20px;
+}
+
+.changer {
+    background: #000d;
+    border-radius: 40px;
+    padding: 16px 20px;
+}
+
+.bar {
+    background: black;
+    min-height: 32px;
+
+    button {
+        margin: 4px;
+        padding: 0 8px;
+
+        :hover {
+            border-radius: 32px;
+            background: #222;
+            padding: 0 8px;
+            margin: 0 -8px;
+        }
+    }
+}
+
