@@ -87,3 +87,69 @@ popover {
         border-radius: 5px;
     }
 }
+
+calendar {
+    border-radius: 4px;
+    background-color: #222;
+    color: white;
+
+    > header {
+        padding: 4px;
+        border-spacing: 4px;
+        border-bottom: 1px solid #333;
+        font-weight: bold;
+
+        > button.image-button {
+            padding: 0;
+            min-width: 24px;
+            min-height: 24px;
+            border-radius: 24px;
+            background-color: transparent;
+            color: #aaa;
+
+            &:hover {
+                background-color: #333;
+            }
+
+            &:disabled {
+                color: #aaa;
+            }
+        }
+    }
+
+    > grid {
+        padding: 4px;
+        border-spacing: 4px;
+
+        > label {
+            padding: 0;
+            min-width: 32px;
+            min-height: 32px;
+            border-radius: 32px;
+
+            &.day-name, &.week-number {
+                color: #aaa;
+                font-weight: semibold;
+            }
+
+            &.day-number {
+                &:hover {
+                    background-color: #333;
+                }
+
+                &.today {
+                    box-shadow: inset 0 0 0 1px #aaa;
+                }
+
+                &.other-month {
+                    color: #777;
+                }
+
+                &:selected {
+                    background-color: #444;
+                    box-shadow: none;
+                }
+            }
+        }
+    }
+}
