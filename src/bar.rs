@@ -168,7 +168,7 @@ impl Component for AppModel {
             AppInput::Layout => ui.layout.set_label(&state.layout.name),
             AppInput::Time => {
                 ui.date
-                    .set_label(&state.time.format("%a %b %-d\t\t%T").to_string());
+                    .set_label(&state.time.format("%a %b %-d \t %T").to_string());
             }
             AppInput::Workspaces => {
                 ui.workspaces_urgent
