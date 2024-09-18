@@ -108,7 +108,7 @@ pub async fn main_loop() -> Result<()> {
     loop {
         let event = rx.recv().await.context("receive event")?;
         debug!("Received {event:?}");
-        trace!("Current state is {:?}", state.read().unwrap());
+        trace!("Current state is {:#?}", state.read().unwrap());
 
         let AppInput::Outputs(new_outputs) = event else {
             play_sound(&stream_handle, &state.read().unwrap(), &event)?;
