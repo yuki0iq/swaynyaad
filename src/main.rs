@@ -26,14 +26,7 @@ fn main() -> glib::ExitCode {
             debug!("Starting relm4");
             std::mem::forget(app.hold());
 
-            // Check style at compile time
-            let mut style = grass::include!("src/style.scss").into();
-            // And prettify it to silence gtk warnings
-            style = grass::from_string(style, &Default::default()).unwrap();
-
-            debug!("Using compiled style:\n{style}");
-
-            relm4::set_global_css(&style);
+            relm4::set_global_css(include_str!(concat!(env!("OUT_DIR"), "/style.css")));
             relm4::spawn_local(async move {
                 debug!("Entering main loop...");
                 if let Err(e) = app::main_loop().await {

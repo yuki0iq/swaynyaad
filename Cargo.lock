@@ -1055,7 +1055,6 @@ checksum = "f7a68216437ef68f0738e48d6c7bb9e6e6a92237e001b03d838314b068f33c94"
 dependencies = [
  "getrandom",
  "grass_compiler",
- "include_sass",
 ]
 
 [[package]]
@@ -1069,7 +1068,6 @@ dependencies = [
  "lasso",
  "once_cell",
  "phf",
- "rand",
 ]
 
 [[package]]
@@ -1244,17 +1242,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
 dependencies = [
  "cc",
-]
-
-[[package]]
-name = "include_sass"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6090ec145f7cf645ff53998a54d3fc77ae02d71651093ee53806769eb40ea1f"
-dependencies = [
- "grass_compiler",
- "quote",
- "syn",
 ]
 
 [[package]]
