@@ -1,6 +1,6 @@
 use crate::bar::AppInput;
 use crate::state::{AppState, Node, Screen};
-use anyhow::{Context, Result};
+use eyre::{Context, Result};
 use log::debug;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};

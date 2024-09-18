@@ -1,7 +1,7 @@
 use crate::bar::{AppInput, AppModel};
 use crate::listeners;
 use crate::state::AppState;
-use anyhow::{ensure, Context, Result};
+use eyre::{ensure, Context, OptionExt, Result};
 use gtk::{gdk, prelude::*};
 use log::{debug, info, trace, warn};
 use relm4::prelude::*;
@@ -51,7 +51,7 @@ fn adjust_windows(
     windows.retain(|output, _| new_outputs.contains(output));
 
     let monitors = gdk::Display::default()
-        .context("Failed to get default display")?
+        .ok_or_eyre("Failed to get default display")?
         .monitors()
         .into_iter()
         .take_while(Result::is_ok)
@@ -67,7 +67,7 @@ fn adjust_windows(
         let monitor = monitors
             .iter()
             .find(|monitor| monitor.connector().as_deref() == Some(added))
-            .context("unknown monitor");
+            .ok_or_eyre("unknown monitor");
         let Ok(monitor) = monitor else {
             warn!("GDK and Sway monitor mismatch! {added} exists, but not for GDK");
             continue;
@@ -106,7 +106,7 @@ pub async fn main_loop() -> Result<()> {
     info!("Ready dispatching events");
 
     loop {
-        let event = rx.recv().await.context("receive event")?;
+        let event = rx.recv().await.ok_or_eyre("receive event")?;
         debug!("Received {event:?}");
         trace!("Current state is {:#?}", state.read().unwrap());
 

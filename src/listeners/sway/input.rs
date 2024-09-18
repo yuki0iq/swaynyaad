@@ -1,6 +1,6 @@
 use crate::bar::AppInput;
 use crate::state::{AppState, XkbLayout};
-use anyhow::{Context, Result};
+use eyre::{Context, Result};
 use log::debug;
 use std::sync::{Arc, RwLock};
 use swayipc_async::Connection;

@@ -2,7 +2,7 @@ use crate::bar::AppInput;
 use crate::state::{AppState, Pulse, PulseKind};
 use alsa::mixer::{Mixer, Selem};
 use alsa::poll::{pollfd, Descriptors};
-use anyhow::{Context, Result};
+use eyre::{Context, OptionExt, Result};
 use log::{debug, info, trace};
 use std::sync::{Arc, RwLock};
 use tokio::io::unix::AsyncFd;
@@ -34,7 +34,7 @@ async fn alsa_loop(pulse_tx: mpsc::UnboundedSender<(PulseKind, Pulse)>) -> Resul
             pulse_tx
                 .send((kind, Pulse::make(selem, kind)))
                 .ok()
-                .context("send alsa")?;
+                .ok_or_eyre("send alsa")?;
         }
         trace!("ALSA post-loop volume dispatch");
 

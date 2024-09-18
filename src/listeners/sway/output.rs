@@ -1,6 +1,6 @@
 use crate::bar::AppInput;
 use crate::state::AppState;
-use anyhow::{Context, Result};
+use eyre::{Context, Result};
 use log::debug;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};

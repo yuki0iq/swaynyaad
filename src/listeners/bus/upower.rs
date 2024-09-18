@@ -1,6 +1,6 @@
 use crate::bar::AppInput;
 use crate::state::{AppState, Power};
-use anyhow::{Context, Result};
+use eyre::{Context, Result};
 use futures_lite::stream::StreamExt;
 use log::{debug, info};
 use std::sync::{Arc, RwLock};
