@@ -1,3 +1,5 @@
+cargo-features = ["codegen-backend"]
+
 [package]
 name = "swaynyaad"
 version = "0.1.0"
@@ -25,3 +27,6 @@ tokio = { version = "1.39.3", default-features = false, features = ["net", "proc
 tokio-stream = { version = "0.1.15", default-features = false }
 upower_dbus = { git = "https://github.com/pop-os/dbus-settings-bindings", version = "0.3.2" }
 zbus = { version = "4.4.0", default-features = false, features = ["tokio"] }
+
+[profile.dev]
+codegen-backend = "cranelift"
