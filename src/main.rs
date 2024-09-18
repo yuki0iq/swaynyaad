@@ -28,12 +28,10 @@ fn main() -> glib::ExitCode {
 
             // Check style at compile time
             let mut style = grass::include!("src/style.scss").into();
+            // And prettify it to silence gtk warnings
+            style = grass::from_string(style, &Default::default()).unwrap();
 
-            if log::log_enabled!(log::Level::Debug) {
-                // Prettify style for debugging purposes
-                style = grass::from_string(style, &Default::default()).unwrap();
-                debug!("Using compiled style:\n{style}");
-            }
+            debug!("Using compiled style:\n{style}");
 
             relm4::set_global_css(&style);
             relm4::spawn_local(async move {
