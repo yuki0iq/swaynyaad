@@ -92,7 +92,12 @@ impl Component for AppModel {
                     set_spacing: 8,
 
                     gtk::MenuButton {
-                        #[wrap(Some)] #[name(date)] set_child = &gtk::Label,
+                        #[wrap(Some)] set_child = &gtk::Box {
+                            // NOTE: The spacing is higher than between icons!
+                            set_spacing: 16,
+                            #[name(date)] gtk::Label,
+                            #[name(time)] gtk::Label,
+                        },
                         #[wrap(Some)] set_popover = &gtk::Popover {
                             // TODO styles and date.
                             #[wrap(Some)] set_child = &gtk::Calendar,
@@ -168,7 +173,8 @@ impl Component for AppModel {
             AppInput::Layout => ui.layout.set_label(&state.layout.name),
             AppInput::Time => {
                 ui.date
-                    .set_label(&state.time.format("%a %b %-d \t %T").to_string());
+                    .set_label(&state.time.format("%a %b %-d").to_string());
+                ui.time.set_label(&state.time.format("%T").to_string());
             }
             AppInput::Workspaces => {
                 ui.workspaces_urgent
