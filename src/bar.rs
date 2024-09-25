@@ -172,9 +172,20 @@ impl Component for AppModel {
             AppInput::Outputs(_) => {}
             AppInput::Layout => ui.layout.set_label(&state.layout.name),
             AppInput::Time => {
-                ui.date
-                    .set_label(&state.time.format("%a %b %-d").to_string());
-                ui.time.set_label(&state.time.format("%T").to_string());
+                if std::env::var_os("alternative_time").is_some() {
+                    // difference between Apr 12, 1961 06:07 UTC and Jan 1, 0000 00:00 UTC
+                    // see https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=c94dab72cb3a36449be9284e6ea08bd4
+                    const TERRA_EPOCH: chrono::TimeDelta = chrono::TimeDelta::seconds(61891970820);
+                    let terra = state.time.to_utc() - TERRA_EPOCH;
+
+                    ui.date
+                        .set_label(&terra.format("Terra %Y day %j").to_string());
+                    ui.time.set_label(&terra.format("%T").to_string());
+                } else {
+                    ui.date
+                        .set_label(&state.time.format("%a %b %-d").to_string());
+                    ui.time.set_label(&state.time.format("%T").to_string());
+                }
             }
             AppInput::Workspaces => {
                 ui.workspaces_urgent
