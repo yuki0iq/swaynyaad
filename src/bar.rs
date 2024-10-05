@@ -105,6 +105,9 @@ impl Component for AppModel {
                     },
                     gtk::MenuButton {
                         #[wrap(Some)] #[name(layout)] set_child = &gtk::Label,
+                        #[wrap(Some)] set_popover = &gtk::Popover {
+                            #[wrap(Some)] #[name(layout_name)] set_child = &gtk::Label,
+                        },
                     },
                 },
 
@@ -170,7 +173,10 @@ impl Component for AppModel {
         let state = self.state.read().unwrap();
         match message {
             AppInput::Outputs(_) => {}
-            AppInput::Layout => ui.layout.set_label(&state.layout.name),
+            AppInput::Layout => {
+                ui.layout.set_label(&state.layout.name);
+                ui.layout_name.set_label(&state.layout.description);
+            }
             AppInput::Time => {
                 if std::env::var_os("alternative_time").is_some() {
                     // difference between Apr 12, 1961 06:07 UTC and Jan 1, 0000 00:00 UTC
