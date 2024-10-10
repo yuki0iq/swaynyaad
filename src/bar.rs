@@ -155,7 +155,6 @@ impl Component for AppModel {
             AppInput::Pulse(PulseKind::Source),
             AppInput::Pulse(PulseKind::Sink),
             AppInput::Power,
-            AppInput::PowerChanged,
         ] {
             sender.input_sender().emit(event);
         }
