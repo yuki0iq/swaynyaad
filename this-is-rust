@@ -1,1 +1,1 @@
-RUSTFLAGS='-Ccodegen-units=1 -Cpanic=abort -Clto=fat -Cembed-bitcode=yes -Copt-level=z' cargo +nightly build --release --target x86_64-unknown-linux-gnu -Zbuild-std=std,panic_abort
+RUSTFLAGS='-Ccodegen-units=1 -Cpanic=abort -Clto=fat -Cembed-bitcode=yes -Copt-level=3' cargo +nightly build --release --target x86_64-unknown-linux-gnu -Zbuild-std=std,panic_abort
