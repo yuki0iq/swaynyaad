@@ -13,9 +13,8 @@ fn main() -> glib::ExitCode {
     env_logger::init();
     info!("swaynyaad is starting");
 
-    let app = gtk::Application::builder()
-        .application_id("sylfn.swaynyaad.Bar")
-        .build();
+    let app = relm4::main_application();
+    app.set_application_id(Some("sylfn.swaynyaad.Bar"));
     debug!("Created gtk::Application");
 
     let start = std::sync::Once::new();
