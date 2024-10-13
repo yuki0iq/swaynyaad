@@ -1,6 +1,5 @@
 use crate::bar::{AppInput, AppModel};
-use crate::listeners;
-use crate::state::AppState;
+use crate::{actions, listeners, state::AppState};
 use eyre::{ensure, Context, OptionExt, Result};
 use gtk::{gdk, prelude::*};
 use log::{debug, info, trace, warn};
@@ -98,6 +97,7 @@ pub async fn main_loop() -> Result<()> {
     let state = Arc::new(RwLock::new(AppState::default()));
 
     listeners::start(tx, Arc::clone(&state));
+    actions::setup();
 
     let mut windows: HashMap<String, Controller<AppModel>> = HashMap::new();
 

@@ -125,6 +125,7 @@ impl Power {
 #[derive(Debug, Default)]
 pub struct AppState {
     pub layout: XkbLayout,
+    pub layouts: Vec<String>,
     pub time: DateTime<Local>,
     pub workspaces_urgent: Vec<i32>,
     pub workspaces_existing: BTreeSet<i32>,

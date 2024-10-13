@@ -88,6 +88,26 @@ popover {
         padding: 8px;
         border-radius: 5px;
     }
+
+    &.menu {
+        separator {
+            margin: 8px 0;
+            background-color: #000;
+            color: #0f0;
+        }
+
+        label.title {
+            min-height: 24px;
+            padding: 4px;
+            font-weight: bold;
+        }
+
+        modelbutton {
+            min-height: 22px;
+            min-width: 40px;
+            padding: 4px;
+        }
+    }
 }
 
 calendar {

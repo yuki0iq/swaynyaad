@@ -1,7 +1,7 @@
 use crate::changer::{ChangerInput, ChangerModel};
 use crate::critical::{CriticalInput, CriticalModel};
 use crate::state::{AppState, PulseKind};
-use gtk::{gdk, prelude::*, Align};
+use gtk::{gdk, gio, prelude::*, Align};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use heck::ToTitleCase;
 use log::info;
@@ -20,6 +20,7 @@ pub(crate) struct AppModel {
 pub(crate) enum AppInput {
     Outputs(HashSet<String>),
     Layout,
+    LayoutList,
     Time,
     Workspaces,
     Sysinfo,
@@ -105,9 +106,7 @@ impl Component for AppModel {
                     },
                     gtk::MenuButton {
                         #[wrap(Some)] #[name(layout)] set_child = &gtk::Label,
-                        #[wrap(Some)] set_popover = &gtk::Popover {
-                            #[wrap(Some)] #[name(layout_name)] set_child = &gtk::Label,
-                        },
+                        #[wrap(Some)] #[name(layout_menu)] set_popover = &gtk::PopoverMenu::from_model(None::<&gio::Menu>),
                     },
                 },
 
@@ -145,10 +144,12 @@ impl Component for AppModel {
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         info!("Creating App for {:?}", model.monitor.connector());
+        root.set_application(Some(&relm4::main_application()));
         let widgets = view_output!();
 
         for event in [
             AppInput::Layout,
+            AppInput::LayoutList,
             AppInput::Time,
             AppInput::Workspaces,
             AppInput::Sysinfo,
@@ -174,7 +175,25 @@ impl Component for AppModel {
             AppInput::Outputs(_) => {}
             AppInput::Layout => {
                 ui.layout.set_label(&state.layout.name);
-                ui.layout_name.set_label(&state.layout.description);
+            }
+            AppInput::LayoutList => {
+                // XXX Rebuilding a menu seems like a bad taste
+
+                let menu = gio::Menu::new();
+
+                let layout_menu = gio::Menu::new();
+                for (index, layout_name) in state.layouts.iter().enumerate() {
+                    let item = gio::MenuItem::new(None, None);
+                    item.set_label(Some(layout_name));
+                    item.set_action_and_target_value(
+                        Some("app.xkb_switch_layout"),
+                        Some(&(index as u64).into()),
+                    );
+                    layout_menu.append_item(&item);
+                }
+                menu.append_section(None, &layout_menu);
+
+                ui.layout_menu.set_menu_model(Some(&menu));
             }
             AppInput::Time => {
                 if std::env::var_os("alternative_time").is_some() {
