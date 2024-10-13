@@ -1,4 +1,4 @@
-use gtk::{gdk, prelude::*, Align, IconSize};
+use gtk::{gdk, prelude::*, Orientation};
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use log::info;
 use relm4::prelude::*;
@@ -47,17 +47,16 @@ impl Component for ChangerModel {
             add_css_class: "changer",
             set_visible: false,
 
-            gtk::Grid {
-                set_column_spacing: 16,
-                set_row_spacing: 8,
-                set_halign: Align::Center,
-                set_valign: Align::Center,
+            gtk::Box {
+                set_orientation: Orientation::Vertical,
+                set_spacing: 8,
 
-                attach[0, 0, 1, 2]: icon = &gtk::Image {
-                    set_icon_size: IconSize::Large,
+                gtk::CenterBox {
+                    #[wrap(Some)] #[name(icon)] set_start_widget = &gtk::Image,
+                    #[wrap(Some)] #[name(name)] set_center_widget = &gtk::Label,
+                    #[wrap(Some)] #[name(text)] set_end_widget = &gtk::Label,
                 },
-                attach[1, 0, 1, 1]: name = &gtk::Label,
-                attach[1, 1, 1, 1]: value = &gtk::ProgressBar,
+                #[name(value)] gtk::ProgressBar,
             },
         }
     }
@@ -96,6 +95,7 @@ impl Component for ChangerModel {
                 ui.window.set_visible(true);
                 ui.name.set_text(&name);
                 ui.icon.set_icon_name(Some(&icon));
+                ui.text.set_text(&format!("{}", (value * 100.).round()));
                 ui.value.set_fraction(value);
                 self.watcher.notify_one();
             }

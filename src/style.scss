@@ -52,8 +52,10 @@ progressbar.vertical > trough {
 
 .changer {
     background: #000d;
-    border-radius: 40px;
-    padding: 16px 20px;
+    border: 1px solid #222;
+    border-radius: 8px;
+    padding: 8px;
+    min-width: 192px;
 
     font-weight: bold;
 }
