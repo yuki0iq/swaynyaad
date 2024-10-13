@@ -1,7 +1,7 @@
 use crate::bar::AppInput;
 use crate::state::AppState;
-use eyre::{bail, Context, Result};
 use chrono::offset::Local;
+use eyre::{bail, Context, Result};
 use log::{info, trace};
 use rustix::system;
 use std::sync::{Arc, RwLock};
