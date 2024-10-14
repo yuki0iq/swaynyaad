@@ -2,7 +2,6 @@ use gtk::{glib, prelude::*};
 use log::{debug, error, info};
 use relm4::prelude::*;
 
-mod actions;
 mod app;
 mod bar;
 mod changer;
