@@ -13,6 +13,19 @@ fn main() -> glib::ExitCode {
     env_logger::init();
     info!("swaynyaad is starting");
 
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name_fn(|| {
+            use core::sync::atomic::{AtomicUsize, Ordering};
+            static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+            let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+            format!("nya-{}", id)
+        })
+        .build()
+        .expect("create custom tokio runtime");
+    let _guard = runtime.enter();
+    info!("Entered tokio runtime from main thread");
+
     let app = relm4::main_application();
     app.set_application_id(Some("sylfn.swaynyaad.Bar"));
     debug!("Created gtk::Application");

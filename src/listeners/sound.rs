@@ -66,7 +66,7 @@ pub async fn start(
 ) -> Result<()> {
     info!("Starting ALSA mixer updater");
     let (pulse_tx, mut pulse_rx) = mpsc::unbounded_channel();
-    relm4::spawn(alsa_loop(pulse_tx));
+    tokio::spawn(alsa_loop(pulse_tx));
 
     info!("Started ALSA mixer, ready");
 

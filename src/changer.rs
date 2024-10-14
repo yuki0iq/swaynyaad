@@ -70,7 +70,7 @@ impl Component for ChangerModel {
         let widgets = view_output!();
 
         let notify = Arc::clone(&model.watcher);
-        relm4::spawn(async move {
+        tokio::spawn(async move {
             loop {
                 let event = tokio::time::timeout(Duration::from_secs(1), notify.notified()).await;
                 if event.is_err() {
