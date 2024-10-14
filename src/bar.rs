@@ -19,7 +19,7 @@ pub(crate) struct AppModel {
 #[derive(Debug, Clone)]
 pub(crate) enum AppInput {
     Outputs(HashSet<String>),
-    Layout,
+    Layout(i32),
     LayoutList,
     Time,
     Workspaces,
@@ -148,8 +148,7 @@ impl Component for AppModel {
         let widgets = view_output!();
 
         for event in [
-            AppInput::Layout,
-            AppInput::LayoutList,
+            AppInput::Layout(0),
             AppInput::Time,
             AppInput::Workspaces,
             AppInput::Sysinfo,
@@ -173,8 +172,12 @@ impl Component for AppModel {
         let state = self.state.read().unwrap();
         match message {
             AppInput::Outputs(_) => {}
-            AppInput::Layout => {
-                ui.layout.set_label(&state.layout.name);
+            AppInput::Layout(idx) => {
+                // TODO more correct short name
+                let Some(name) = state.layouts.get(idx as usize) else {
+                    return;
+                };
+                ui.layout.set_label(&name[..2].to_ascii_lowercase());
             }
             AppInput::LayoutList => {
                 // XXX Rebuilding a menu seems like a bad taste
@@ -187,7 +190,7 @@ impl Component for AppModel {
                     item.set_label(Some(layout_name));
                     item.set_action_and_target_value(
                         Some("app.xkb_switch_layout"),
-                        Some(&(index as u64).into()),
+                        Some(&(index as i32).into()),
                     );
                     layout_menu.append_item(&item);
                 }

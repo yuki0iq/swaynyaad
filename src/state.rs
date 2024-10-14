@@ -2,12 +2,6 @@ use alsa::mixer::{Selem, SelemChannelId};
 use chrono::{offset::Local, DateTime};
 use std::collections::{BTreeSet, HashMap};
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct XkbLayout {
-    pub name: String,
-    pub description: String,
-}
-
 #[derive(Debug, Default)]
 pub struct Node {
     pub shell: String,
@@ -124,7 +118,6 @@ impl Power {
 
 #[derive(Debug, Default)]
 pub struct AppState {
-    pub layout: XkbLayout,
     pub layouts: Vec<String>,
     pub time: DateTime<Local>,
     pub workspaces_urgent: Vec<i32>,
