@@ -26,6 +26,8 @@ fn main() -> glib::ExitCode {
     let _guard = runtime.enter();
     info!("Entered tokio runtime from main thread");
 
+    glib::ThreadPool::set_max_unused_threads(None);
+
     let app = relm4::main_application();
     app.set_application_id(Some("sylfn.swaynyaad.Bar"));
     debug!("Created gtk::Application");
