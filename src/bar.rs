@@ -74,9 +74,13 @@ impl Component for AppModel {
                     set_spacing: 8,
 
                     gtk::MenuButton {
+                        add_css_class: "bar-button",
+
                         #[wrap(Some)] #[name(workspace_number)] set_child = &gtk::Label,
                     },
                     #[name(window)] gtk::MenuButton {
+                        add_css_class: "bar-button",
+
                         #[wrap(Some)] set_child = &gtk::Box {
                             set_spacing: 8,
                             #[name(window_class)] gtk::Label,
@@ -93,6 +97,8 @@ impl Component for AppModel {
                     set_spacing: 8,
 
                     gtk::MenuButton {
+                        add_css_class: "bar-button",
+
                         #[wrap(Some)] set_child = &gtk::Box {
                             // NOTE: The spacing is higher than between icons!
                             set_spacing: 16,
@@ -105,6 +111,8 @@ impl Component for AppModel {
                         },
                     },
                     gtk::MenuButton {
+                        add_css_class: "bar-button",
+
                         #[wrap(Some)] #[name(layout)] set_child = &gtk::Label,
                         #[wrap(Some)] #[name(layout_menu)] set_popover = &gtk::PopoverMenu::from_model(None::<&gio::Menu>),
                     },
@@ -114,6 +122,8 @@ impl Component for AppModel {
                     set_halign: Align::End,
 
                     gtk::MenuButton {
+                        add_css_class: "bar-button",
+
                         #[wrap(Some)] set_child = &gtk::Box {
                             set_spacing: 8,
                             #[name(workspaces_urgent)] gtk::Image {
