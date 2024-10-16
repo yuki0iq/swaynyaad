@@ -194,17 +194,35 @@ impl Component for AppModel {
 
                 let menu = gio::Menu::new();
 
-                let layout_menu = gio::Menu::new();
-                for (index, layout_name) in state.layouts.iter().enumerate() {
-                    let item = gio::MenuItem::new(None, None);
-                    item.set_label(Some(layout_name));
-                    item.set_action_and_target_value(
-                        Some("app.xkb_switch_layout"),
-                        Some(&(index as i32).into()),
-                    );
-                    layout_menu.append_item(&item);
-                }
-                menu.append_section(None, &layout_menu);
+                menu.append_section(None, &{
+                    let layout_menu = gio::Menu::new();
+                    for (index, layout_name) in state.layouts.iter().enumerate() {
+                        layout_menu.append_item(&{
+                            let item = gio::MenuItem::new(None, None);
+                            item.set_label(Some(layout_name));
+                            item.set_action_and_target_value(
+                                Some("app.xkb_switch_layout"),
+                                Some(&(index as i32).into()),
+                            );
+                            item
+                        });
+                    }
+                    layout_menu
+                });
+
+                menu.append_section(None, &{
+                    let menu = gio::Menu::new();
+                    menu.append_item(&{
+                        let item = gio::MenuItem::new(None, None);
+                        item.set_label(Some("Show keyboard layout"));
+                        item.set_action_and_target_value(
+                            Some("app.subprocess"),
+                            Some(&["tecla"][..].into()),
+                        );
+                        item
+                    });
+                    menu
+                });
 
                 ui.layout_menu.set_menu_model(Some(&menu));
             }
