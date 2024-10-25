@@ -110,17 +110,17 @@ impl Component for AppModel {
                             #[wrap(Some)] set_child = &gtk::Calendar,
                         },
                     },
+                },
+
+                #[wrap(Some)] set_end_widget = &gtk::Box {
+                    set_halign: Align::End,
+
                     gtk::MenuButton {
                         add_css_class: "bar-button",
 
                         #[wrap(Some)] #[name(layout)] set_child = &gtk::Label,
                         #[wrap(Some)] #[name(layout_menu)] set_popover = &gtk::PopoverMenu::from_model(None::<&gio::Menu>),
                     },
-                },
-
-                #[wrap(Some)] set_end_widget = &gtk::Box {
-                    set_halign: Align::End,
-
                     gtk::MenuButton {
                         add_css_class: "bar-button",
 
